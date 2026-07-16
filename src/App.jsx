@@ -309,15 +309,18 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-blue-200 pb-12">
+    // FIX: Se añade overflow-x-hidden para matar el scroll horizontal
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-200 pb-12 overflow-x-hidden">
       
       {/* Top Navbar */}
       <div className="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md">
         <div className="flex items-center gap-3">
+          {/* FIX: Estilo en línea forzado para evitar el logo gigante si el CSS se demora */}
           <img 
             src="https://media.beehiiv.com/cdn-cgi/image/format=auto,onerror=redirect/uploads/asset/file/412cff10-d6bf-4948-93cb-9626504d550b/Gemini_Generated_Image_hgi88jhgi88jhgi8-ezremove.png" 
             alt="The Predictive Engine Logo" 
             className="w-10 h-10 mix-blend-screen object-contain"
+            style={{ width: '40px', height: '40px', flexShrink: 0 }}
           />
           <span className="font-bold tracking-wide text-lg hidden sm:inline-block">The Predictive Engine <span className="text-blue-400 font-light">PRO</span></span>
         </div>
@@ -329,6 +332,7 @@ export default function App() {
         </button>
       </div>
 
+      {/* Main Container - FIX: Ya tiene max-w-7xl mx-auto, ahora funcionará perfecto con el overflow oculto del padre */}
       <div className="max-w-7xl mx-auto p-6 lg:p-8 space-y-8">
         
         {/* Header */}
