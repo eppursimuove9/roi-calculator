@@ -176,7 +176,7 @@ export default function App() {
     setAiLoading(true);
     setAiError("");
     
-    const apiKey = ""; 
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY; 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
     
     const costTypeStr = pricingModel === 'saas' ? 'CAPEX (Flat-rate Licenses)' : 'OPEX (API/Tokens Consumption)';
