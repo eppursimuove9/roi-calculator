@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AlertTriangle, CheckCircle, TrendingUp, DollarSign, Clock, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, Calendar, Target, Rocket, PieChart, RefreshCw } from 'lucide-react';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
 // --- UTILITIES ---
 const clamp = (value, min, max) => {
@@ -123,10 +123,10 @@ export default function App() {
       doc.setFontSize(10);
       doc.setTextColor(100);
       doc.text(`Generated on: ${timestamp}`, 14, 30);
-      doc.text("Confidential ROI Analysis Report - The Predictive Engine PRO", 14, 35);
+      doc.text("Confidential ROI Analysis Report - Aineurolytics", 14, 35);
 
       // 2. Tabla de Variables del Escenario Actual vs Objetivo
-      doc.autoTable({
+      autoTable(doc, {
         startY: 45,
         head: [['Metric / Parameter', 'Current Value', 'Target Value']],
         body: [
@@ -150,7 +150,7 @@ export default function App() {
       const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
       const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} Months` : 'Not recoverable';
 
-      doc.autoTable({
+      autoTable(doc, {
         startY: finalY + 20,
         head: [['Financial Indicator', 'Calculated Value']],
         body: [
@@ -162,7 +162,7 @@ export default function App() {
           ['Projected ROI', `${roiStr}`],
           ['Payback Period', `${paybackStr}`],
         ],
-        headStyles: { fillColor: [37, 99, 235] }, // Azul brillante de tu interfaz (blue-600)
+        headStyles: { fillColor: [37, 99, 235] }, // Azul brillante
       });
 
       // 4. Pie de página
