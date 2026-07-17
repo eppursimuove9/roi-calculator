@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AlertTriangle, CheckCircle, TrendingUp, DollarSign, Clock, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, Calendar, Target, Rocket, PieChart, RefreshCw } from 'lucide-react';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
 
 // --- UTILITIES ---
 const clamp = (value, min, max) => {
@@ -107,34 +109,72 @@ export default function App() {
   };
 
   // --- PDF EXPORT FUNCTION ---
-  const handleDownloadPDF = async () => {
+  const handleDownloadPDF = () => {
     setIsGeneratingPdf(true);
     try {
-      if (!window.html2pdf) {
-        await new Promise((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-          script.onload = resolve;
-          script.onerror = reject;
-          document.head.appendChild(script);
-        });
-      }
+      const doc = new jsPDF();
+      const timestamp = new Date().toLocaleDateString();
 
-      window.scrollTo(0, 0);
-      const element = document.getElementById('pdf-report-container');
+      // 1. Estilo y Título
+      doc.setFontSize(20);
+      doc.setTextColor(15, 23, 42); // slate-900
+      doc.text("Business Case: Verification Tax ROI", 14, 22);
       
-      const opt = {
-        margin:       0.4,
-        filename:     'ROI_Report_Verification_Tax.pdf',
-        image:        { type: 'jpeg', quality: 1 },
-        html2canvas:  { scale: 2, useCORS: true, scrollY: 0, logging: false },
-        jsPDF:        { unit: 'in', format: 'letter', orientation: 'portrait' }
-      };
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      doc.text(`Generated on: ${timestamp}`, 14, 30);
+      doc.text("Confidential ROI Analysis Report - The Predictive Engine PRO", 14, 35);
 
-      await window.html2pdf().set(opt).from(element).save();
+      // 2. Tabla de Variables del Escenario Actual vs Objetivo
+      doc.autoTable({
+        startY: 45,
+        head: [['Metric / Parameter', 'Current Value', 'Target Value']],
+        body: [
+          ['Active Developers', `${devs}`, `${devs}`],
+          ['LOC per Dev / Day', `${locPerDev}`, `${locPerDev}`],
+          ['Agentic CI/CD Automation', `${automation}%`, `${targetAutomation}%`],
+          ['Senior Engineers Available', `${seniors}`, `${seniors}`],
+          ['Senior Daily Review Hours', `${dailyReviewHoursPerSenior}h`, `${dailyReviewHoursPerSenior}h`],
+          ['Audit Speed (Mins per 500 LOC)', `${minsPer500}m`, `${minsPer500}m`],
+          ['Senior Hourly Rate', `$${hourlyRate}`, `$${hourlyRate}`],
+        ],
+        headStyles: { fillColor: [15, 23, 42] }, // Slate-900 corporativo
+      });
+
+      // 3. Tabla de Resultados Financieros
+      const finalY = doc.lastAutoTable.finalY || 45;
+      doc.setFontSize(14);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Financial & Operational Impact Summary", 14, finalY + 15);
+
+      const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
+      const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} Months` : 'Not recoverable';
+
+      doc.autoTable({
+        startY: finalY + 20,
+        head: [['Financial Indicator', 'Calculated Value']],
+        body: [
+          ['Annual Verification Burden Value (Current)', `$${currentAnnualVerificationValue.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Potential Released Capacity Value', `$${annualCapacityValue.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Realizable Annual Savings', `$${realizedAnnualSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Calculated Annual Software Cost', `$${calculatedSoftwareCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Net Annual Benefit', `$${netAnnualBenefit.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Projected ROI', `${roiStr}`],
+          ['Payback Period', `${paybackStr}`],
+        ],
+        headStyles: { fillColor: [37, 99, 235] }, // Azul brillante de tu interfaz (blue-600)
+      });
+
+      // 4. Pie de página
+      doc.setFontSize(8);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text("Powered by The Predictive Engine PRO - ROI Verification Tax Simulator", 14, 285);
+
+      // 5. Descarga automática
+      doc.save(`ROI_Report_Verification_Tax_${timestamp.replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error("Error generating PDF:", error);
-      alert("There was an error generating the PDF. Please check your connection and try again.");
+      alert("There was an error generating the PDF. Please try again.");
     } finally {
       setIsGeneratingPdf(false);
     }
