@@ -198,98 +198,79 @@ export default function App() {
   };
 
   // --- GEMINI API INTEGRATION ---
-  const fetchWithRetry = async (url, options, retries = 5) => {
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        return await response.json();
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, delays[i]));
-      }
-    }
-  };
+const executeAIGeneration = async (type) => {
+  setAiLoading(true);
+  setAiError("");
 
-  const executeAIGeneration = async (type) => {
-    setAiLoading(true);
-    setAiError("");
+  const costTypeStr = pricingModel === 'saas' ? 'CAPEX (Flat-rate Licenses)' : 'OPEX (API/Tokens Consumption)';
+  const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} months` : 'Not recoverable under current assumptions';
+  const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
+
+  const isNegativeCase = (roiPercentage !== null && roiPercentage < 0) || paybackMonths === null;
+
+  let prompt = "";
+  if (type === 'pitch') {
+    prompt = `Based on the following operational and financial data from my engineering team, write an executive pitch (maximum 3 key bullet points) for the board of directors regarding an investment of $${calculatedSoftwareCost.toLocaleString()} USD in Agentic CI/CD tools (${costTypeStr}).
     
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    // NUEVO: Validación de seguridad
-    if (!apiKey) {
-      setAiError("La API Key no está configurada en Vercel. Asegúrate de agregar VITE_GEMINI_API_KEY en Settings.");
-      setAiLoading(false);
-      return;
-    }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    Current Risk Metrics:
+    - Technical Debt Backlog: Accumulating ${currentDailyBacklog.toFixed(1)} daily hours of unattended code review.
+    - Annual Verification Burden Value: $${currentAnnualVerificationValue.toLocaleString()} USD (equivalent capacity cost).
     
-    const costTypeStr = pricingModel === 'saas' ? 'CAPEX (Flat-rate Licenses)' : 'OPEX (API/Tokens Consumption)';
-    const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} months` : 'Not recoverable under current assumptions';
-    const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
+    Target Scenario & ROI Metrics:
+    - Savings Realization Rate: ${savingsRealizationRate}%.
+    - Potential Released Capacity Value: $${annualCapacityValue.toLocaleString()} USD.
+    - Realizable Financial Savings: $${realizedAnnualSavings.toLocaleString()} USD.
+    - Return on Investment (ROI): ${roiStr}.
+    - Payback Period: ${paybackStr}.
+    - Net Annual Benefit: $${netAnnualBenefit.toLocaleString()} USD.
     
-    const isNegativeCase = (roiPercentage !== null && roiPercentage < 0) || paybackMonths === null;
+    ${isNegativeCase ?
+      'CRITICAL NOTE: The ROI is negative or null under current realization assumptions. The pitch must not invent a false positive case. It must state that the current investment is not financially recovered with the current realization rate, suggesting evaluating the adoption from the perspective of critical technical debt mitigation or adjusting the cost strategy.' :
+      `The tone should be that of a CTO or strategic consultant (The Predictive Engine). Focus on how this investment pays for itself in ${paybackStr} through realizable savings, and how it allows reallocating senior talent towards value creation.`}
+    Be direct, persuasive, and precise with the metrics. Do not use the terms "Sunk cost" or "Lost money". The output must be in English.`;
+  } else if (type === 'email') {
+    prompt = `Act as a B2B Engineering Director. Write a formal and direct email addressed to the CFO requesting a budget of $${calculatedSoftwareCost.toLocaleString()} USD (${costTypeStr}) to acquire code review automation (Agentic CI/CD).
+    
+    Exact financial data:
+    1. The Annual Verification Burden Value (manual review) is $${currentAnnualVerificationValue.toLocaleString()} USD.
+    2. The investment will release capacity worth $${annualCapacityValue.toLocaleString()} USD. Applying our realization rate of ${savingsRealizationRate}%, the realizable financial savings are $${realizedAnnualSavings.toLocaleString()} USD.
+    3. Net Annual Benefit: $${netAnnualBenefit.toLocaleString()} USD.
+    4. Payback Period: ${paybackStr}. Projected ROI: ${roiStr}.
+    
+    ${isNegativeCase ?
+      'IMPORTANT: The ROI is negative. The email must be transparent with the CFO, indicating that although the pure financial ROI is not currently favorable, the investment should be evaluated based on the urgency to reduce the technical debt backlog or alleviate senior capacity, without dressing up the numbers.' :
+      'The email should have a clear Subject, be structured, and focus 100% on the business case and capital efficiency.'}
+    Eliminate hyper-technical jargon. Do not use terms like "capital leak" or "sunk cost". The output must be in English.`;
+  }
 
-    let prompt = "";
-    if (type === 'pitch') {
-      prompt = `Based on the following operational and financial data from my engineering team, write an executive pitch (maximum 3 key bullet points) for the board of directors regarding an investment of $${calculatedSoftwareCost.toLocaleString()} USD in Agentic CI/CD tools (${costTypeStr}).
-      
-      Current Risk Metrics:
-      - Technical Debt Backlog: Accumulating ${currentDailyBacklog.toFixed(1)} daily hours of unattended code review.
-      - Annual Verification Burden Value: $${currentAnnualVerificationValue.toLocaleString()} USD (equivalent capacity cost).
-      
-      Target Scenario & ROI Metrics:
-      - Savings Realization Rate: ${savingsRealizationRate}%.
-      - Potential Released Capacity Value: $${annualCapacityValue.toLocaleString()} USD.
-      - Realizable Financial Savings: $${realizedAnnualSavings.toLocaleString()} USD.
-      - Return on Investment (ROI): ${roiStr}.
-      - Payback Period: ${paybackStr}.
-      - Net Annual Benefit: $${netAnnualBenefit.toLocaleString()} USD.
-      
-      ${isNegativeCase ? 
-        'CRITICAL NOTE: The ROI is negative or null under current realization assumptions. The pitch must not invent a false positive case. It must state that the current investment is not financially recovered with the current realization rate, suggesting evaluating the adoption from the perspective of critical technical debt mitigation or adjusting the cost strategy.' : 
-        `The tone should be that of a CTO or strategic consultant (The Predictive Engine). Focus on how this investment pays for itself in ${paybackStr} through realizable savings, and how it allows reallocating senior talent towards value creation.`}
-      Be direct, persuasive, and precise with the metrics. Do not use the terms "Sunk cost" or "Lost money". The output must be in English.`;
-    } else if (type === 'email') {
-      prompt = `Act as a B2B Engineering Director. Write a formal and direct email addressed to the CFO requesting a budget of $${calculatedSoftwareCost.toLocaleString()} USD (${costTypeStr}) to acquire code review automation (Agentic CI/CD).
-      
-      Exact financial data:
-      1. The Annual Verification Burden Value (manual review) is $${currentAnnualVerificationValue.toLocaleString()} USD.
-      2. The investment will release capacity worth $${annualCapacityValue.toLocaleString()} USD. Applying our realization rate of ${savingsRealizationRate}%, the realizable financial savings are $${realizedAnnualSavings.toLocaleString()} USD.
-      3. Net Annual Benefit: $${netAnnualBenefit.toLocaleString()} USD.
-      4. Payback Period: ${paybackStr}. Projected ROI: ${roiStr}.
-      
-      ${isNegativeCase ? 
-        'IMPORTANT: The ROI is negative. The email must be transparent with the CFO, indicating that although the pure financial ROI is not currently favorable, the investment should be evaluated based on the urgency to reduce the technical debt backlog or alleviate senior capacity, without dressing up the numbers.' : 
-        'The email should have a clear Subject, be structured, and focus 100% on the business case and capital efficiency.'}
-      Eliminate hyper-technical jargon. Do not use terms like "capital leak" or "sunk cost". The output must be in English.`;
+  const systemInstruction = "You are an executive consultant specializing in Revenue Operations, DevOps, and B2B finance. You communicate concisely, analytically, and oriented towards the financial truth of operating models. Use bullet points and bold text to highlight metrics. Never invent savings metrics that are not in the prompt. Do not guarantee cash savings if the realization rate does not support it.";
+
+  try {
+    // Ahora llamamos a NUESTRO endpoint, no directo a Google.
+    // La API key vive solo en el servidor (api/generate.js), nunca en este código de cliente.
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, systemInstruction }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || `HTTP error ${response.status}`);
     }
 
-    try {
-      const result = await fetchWithRetry(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          systemInstruction: {
-            parts: [{ text: "You are an executive consultant specializing in Revenue Operations, DevOps, and B2B finance. You communicate concisely, analytically, and oriented towards the financial truth of operating models. Use bullet points and bold text to highlight metrics. Never invent savings metrics that are not in the prompt. Do not guarantee cash savings if the realization rate does not support it." }]
-          }
-        })
-      });
-
-      const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        setAiSummaries(prev => ({ ...prev, [type]: text }));
-      } else {
-        throw new Error("No content received");
-      }
-    } catch (err) {
-      setAiError("An error occurred while contacting the AI engine. Please try again later.");
-    } finally {
-      setAiLoading(false);
+    if (data?.text) {
+      setAiSummaries(prev => ({ ...prev, [type]: data.text }));
+    } else {
+      throw new Error("No content received");
     }
-  };
+  } catch (err) {
+    setAiError("An error occurred while contacting the AI engine. Please try again later.");
+  } finally {
+    setAiLoading(false);
+  }
+};
 
   // --- CONTROL COMPONENT (SLIDER + INPUT) ---
   const ControlSlider = ({ 
