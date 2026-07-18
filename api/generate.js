@@ -20,7 +20,7 @@ export default async function handler(req, res) {
   }
 
   // 4. URL de Gemini (Usando el modelo estable 1.5-flash)
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
   try {
     // 5. Hacemos la consulta a Google desde el servidor oculto
