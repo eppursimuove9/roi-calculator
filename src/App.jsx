@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, ReferenceLine, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { AlertTriangle, TrendingUp, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, RefreshCw, Target, Rocket, PieChart } from 'lucide-react';
+import { AlertTriangle, TrendingUp, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, RefreshCw, Target, Rocket, PieChart, BookOpen } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -55,6 +55,55 @@ function ControlSlider({
   );
 }
 
+const fmtMoney = (n) => {
+  if (n === null || n === undefined || !isFinite(n)) return 'N/A';
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 1e7) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  return `${sign}$${Math.round(abs).toLocaleString()}`;
+};
+const fmtPct = (n) => (n === null || n === undefined || !isFinite(n) ? 'N/A' : `${Math.round(n).toLocaleString()}%`);
+
+// Chart segments, in stacking order (left to right). The dashed capacity line sits at the end of the first two.
+const SEGMENTS = [
+  { key: 'HumanReviewed', label: 'Reviewed by seniors', color: '#3b82f6', pdf: [59, 130, 246], hint: 'Senior time actually spent on reviews.' },
+  { key: 'UnusedCapacity', label: 'Unused senior capacity', color: '#6ee7b7', pdf: [110, 231, 183], hint: 'Senior hours left over. This is where real savings come from.' },
+  { key: 'Backlog', label: 'Unreviewed backlog', color: '#ef4444', pdf: [239, 68, 68], hint: 'Code nobody has time to review.' },
+  { key: 'AIHandled', label: 'Reviewed by AI', color: '#8b5cf6', pdf: [139, 92, 246], hint: 'Does not use senior time.' },
+];
+
+function Kpi({ label, value, note, accent = 'border-b-slate-500', valueClass = 'text-white', badge = null }) {
+  return (
+    <div className={`min-w-0 bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${accent} flex flex-col gap-1`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wide leading-tight">{label}</div>
+        {badge && <span className="shrink-0 text-[10px] font-bold text-red-400">{badge}</span>}
+      </div>
+      <div className={`text-2xl font-black tabular-nums leading-tight break-words ${valueClass}`}>{value}</div>
+      <div className="text-[11px] text-slate-400 leading-snug">{note}</div>
+    </div>
+  );
+}
+
+function ChartTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-lg p-3 text-sm min-w-[210px]">
+      <div className="font-bold text-slate-900 mb-2">{label}</div>
+      {SEGMENTS.map((sg) => {
+        const item = payload.find((x) => x.dataKey === sg.key);
+        if (!item || !item.value) return null;
+        return (
+          <div key={sg.key} className="flex justify-between gap-4 text-slate-600">
+            <span className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full" style={{ background: sg.color }} />{sg.label}</span>
+            <span className="font-bold text-slate-900 tabular-nums">{Number(item.value).toFixed(1)}h</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 export default function App() {
@@ -95,6 +144,8 @@ export default function App() {
   
   // --- PDF STATE ---
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [exportOpts, setExportOpts] = useState({ chart: true, pitch: false, email: false });
+  const [showGuide, setShowGuide] = useState(true);
 
   // Sync automation boundaries
   useEffect(() => {
@@ -171,20 +222,11 @@ export default function App() {
   const strategicRoi = calculatedSoftwareCost > 0 ? ((strategicBenefit - calculatedSoftwareCost) / calculatedSoftwareCost) * 100 : null;
   const isNegativeStrategic = strategicRoi !== null && strategicRoi < 0;
 
-  // --- CHART DATA (Capacity vs Demand Stacked Bar) ---
+  // --- CHART DATA (one bar per scenario; segments in SEGMENTS order) ---
+  const r1 = (x) => Number(x.toFixed(1));
   const chartData = [
-    { 
-      name: "Current (As-Is)", 
-      HumanExecuted: Number(asIsExecuted.toFixed(1)), 
-      Backlog: Number(asIsBacklog.toFixed(1)), 
-      AIHandled: Number(asIsNetAiHandled.toFixed(1)) 
-    },
-    { 
-      name: "Optimized (To-Be)", 
-      HumanExecuted: Number(toBeExecuted.toFixed(1)), 
-      Backlog: Number(toBeBacklog.toFixed(1)), 
-      AIHandled: Number(toBeNetAiHandled.toFixed(1)) 
-    }
+    { name: "Today (As-Is)", HumanReviewed: r1(asIsExecuted), UnusedCapacity: r1(Math.max(0, capacityHours - asIsExecuted)), Backlog: r1(asIsBacklog), AIHandled: r1(asIsNetAiHandled) },
+    { name: "With AI (To-Be)", HumanReviewed: r1(toBeExecuted), UnusedCapacity: r1(Math.max(0, capacityHours - toBeExecuted)), Backlog: r1(toBeBacklog), AIHandled: r1(toBeNetAiHandled) },
   ];
 
   const handleUnlock = async (e) => {
@@ -213,18 +255,100 @@ export default function App() {
   };
 
   // --- PDF EXPORT FUNCTION ---
+  const stripMd = (t) => t
+    .replace(/^[\s]*[-*]\s+/gm, '- ')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u2026/g, '...')
+    .replace(/[^\x00-\xFF]/g, '');
+
+  // Draws the chart with vector shapes (crisp, no screenshot needed). Returns the next free y.
+  const drawChartPdf = (doc, startY) => {
+    const x0 = 52, plotW = 138, rowH = 14, gap = 10;
+    const top = startY + 16;
+    const plotH = 6 + chartData.length * (rowH + gap);
+    const totals = chartData.map((d) => SEGMENTS.reduce((acc, sg) => acc + d[sg.key], 0));
+    const maxVal = Math.max(capacityHours, ...totals, 1) * 1.1;
+    const scale = plotW / maxVal;
+
+    doc.setFontSize(12); doc.setTextColor(15, 23, 42);
+    doc.text("Where the review work goes (hours per day)", 14, startY + 4);
+    doc.setFontSize(8); doc.setTextColor(100);
+    doc.text("Dashed line = most review hours your seniors can give. Red past the line = code nobody reviews.", 14, startY + 9);
+
+    doc.setDrawColor(226, 232, 240); doc.setLineWidth(0.2);
+    for (let t = 0; t <= 4; t++) {
+      const val = (maxVal * t) / 4;
+      const x = x0 + val * scale;
+      doc.line(x, top, x, top + plotH);
+      doc.setFontSize(7); doc.setTextColor(100);
+      doc.text(`${val.toFixed(0)}h`, x, top + plotH + 4, { align: 'center' });
+    }
+
+    chartData.forEach((d, i) => {
+      const y = top + 6 + i * (rowH + gap);
+      doc.setFontSize(9); doc.setTextColor(15, 23, 42);
+      doc.text(d.name, x0 - 3, y + rowH / 2 + 1, { align: 'right' });
+      let x = x0;
+      SEGMENTS.forEach((sg) => {
+        const w = d[sg.key] * scale;
+        if (w <= 0) return;
+        doc.setFillColor(...sg.pdf);
+        doc.rect(x, y, w, rowH, 'F');
+        if (w > 11) {
+          doc.setFontSize(7); doc.setTextColor(sg.key === 'UnusedCapacity' ? 15 : 255, sg.key === 'UnusedCapacity' ? 23 : 255, sg.key === 'UnusedCapacity' ? 42 : 255);
+          doc.text(`${d[sg.key].toFixed(1)}h`, x + w / 2, y + rowH / 2 + 1, { align: 'center' });
+        }
+        x += w;
+      });
+    });
+
+    const cx = x0 + capacityHours * scale;
+    doc.setDrawColor(11, 17, 32); doc.setLineWidth(0.6);
+    doc.setLineDashPattern([2, 1.5], 0);
+    doc.line(cx, top - 3, cx, top + plotH);
+    doc.setLineDashPattern([], 0);
+    doc.setFontSize(8); doc.setTextColor(11, 17, 32);
+    doc.text(`Senior capacity: ${capacityHours.toFixed(1)}h`, cx, top - 5, { align: 'center' });
+
+    let lx = 14; const ly = top + plotH + 12;
+    SEGMENTS.forEach((sg) => {
+      doc.setFillColor(...sg.pdf); doc.rect(lx, ly - 2.5, 3, 3, 'F');
+      doc.setFontSize(8); doc.setTextColor(60);
+      doc.text(sg.label, lx + 5, ly);
+      lx += 5 + doc.getTextWidth(sg.label) + 8;
+    });
+    return ly + 10;
+  };
+
+  const writeTextSection = (doc, title, text) => {
+    doc.addPage();
+    doc.setFontSize(14); doc.setTextColor(15, 23, 42);
+    doc.text(title, 14, 22);
+    doc.setFontSize(8); doc.setTextColor(120);
+    doc.text("AI-generated draft. Verify the figures before sharing.", 14, 28);
+    doc.setFontSize(10); doc.setTextColor(40);
+    let y = 38;
+    doc.splitTextToSize(stripMd(text), 182).forEach((line) => {
+      if (y > 278) { doc.addPage(); y = 20; }
+      doc.text(line, 14, y);
+      y += 5.5;
+    });
+  };
+
   const handleDownloadPDF = () => {
     setIsGeneratingPdf(true);
     try {
       const doc = new jsPDF();
       const timestamp = new Date().toLocaleDateString();
+      const money = (n) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
-      doc.setFontSize(18);
-      doc.setTextColor(15, 23, 42);
+      doc.setFontSize(18); doc.setTextColor(15, 23, 42);
       doc.text("Business Case: Verification Tax ROI", 14, 22);
-      
-      doc.setFontSize(10);
-      doc.setTextColor(100);
+      doc.setFontSize(10); doc.setTextColor(100);
       doc.text(`Generated on: ${timestamp}`, 14, 30);
       doc.text("Confidential ROI Analysis Report - The Predictive Engine", 14, 35);
 
@@ -247,44 +371,49 @@ export default function App() {
       });
 
       autoTable(doc, {
-        startY: doc.lastAutoTable.finalY + 10,
-        head: [['Operational Metric', 'As-Is', 'To-Be']],
+        startY: doc.lastAutoTable.finalY + 8,
+        head: [['Operational Metric (per day)', 'As-Is', 'To-Be']],
         body: [
-          ['Daily Human Demand', `${asIsHumanDemand.toFixed(1)}h`, `${toBeTotalHumanDemand.toFixed(1)}h`],
-          ['Daily Human Executed', `${asIsExecuted.toFixed(1)}h`, `${toBeExecuted.toFixed(1)}h`],
-          ['Daily Tech Debt (Backlog)', `${asIsBacklog.toFixed(1)}h`, `${toBeBacklog.toFixed(1)}h`]
+          ['Human review demand', `${asIsHumanDemand.toFixed(1)}h`, `${toBeTotalHumanDemand.toFixed(1)}h`],
+          ['Human review executed', `${asIsExecuted.toFixed(1)}h`, `${toBeExecuted.toFixed(1)}h`],
+          ['Backlog (unreviewed)', `${asIsBacklog.toFixed(1)}h`, `${toBeBacklog.toFixed(1)}h`],
+          ['Reviewed by AI', `${asIsNetAiHandled.toFixed(1)}h`, `${toBeNetAiHandled.toFixed(1)}h`],
         ],
         headStyles: { fillColor: [15, 23, 42] },
       });
 
-      const finalY = doc.lastAutoTable.finalY || 45;
-      if (finalY > 215) doc.addPage();
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      const fy = finalY > 215 ? 0 : finalY;
-      doc.text("Financial Impact Summary", 14, fy + 15);
-
       const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
       const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} Months` : 'N/A';
-
       autoTable(doc, {
-        startY: fy + 20,
-        head: [['Financial Indicator', 'Calculated Value']],
+        startY: doc.lastAutoTable.finalY + 8,
+        head: [['Financial Indicator (per year)', 'Calculated Value']],
         body: [
-          ['Realized Hard Capacity Savings', `$${realizedHardSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Avoided Manual Review Cost (non-cash, 100%)', `$${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Avoided Cost after confidence discount', `$${confidenceAdjustedAvoidedCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Calculated Annual Software Cost', `$${calculatedSoftwareCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Conservative ROI (Hard Savings Only)', `${roiStr}`],
-          ['Strategic ROI (Hard + Avoided Cost)', `${strategicRoi !== null ? strategicRoi.toFixed(0) + '%' : 'N/A'}`],
-          ['Payback Period', `${paybackStr}`],
+          ['Realized Hard Capacity Savings', money(realizedHardSavings)],
+          ['Avoided Manual Review Cost (non-cash, 100%)', money(annualTechDebtValue)],
+          ['Avoided Cost after confidence discount', money(confidenceAdjustedAvoidedCost)],
+          ['Annual Software Cost', money(calculatedSoftwareCost)],
+          ['Conservative ROI (Hard Savings Only)', roiStr],
+          ['Strategic ROI (Hard + Avoided Cost)', strategicRoi !== null ? `${strategicRoi.toFixed(0)}%` : 'N/A'],
+          ['Payback Period (Hard Savings)', paybackStr],
         ],
-        headStyles: { fillColor: [245, 46, 1] }, 
+        headStyles: { fillColor: [245, 46, 1] },
       });
 
-      doc.setFontSize(8);
-      doc.setTextColor(148, 163, 184);
-      doc.text("Powered by The Predictive Engine PRO - ROI Verification Tax Simulator", 14, 285);
+      if (exportOpts.chart) {
+        let y = doc.lastAutoTable.finalY + 12;
+        if (y > 180) { doc.addPage(); y = 20; }
+        drawChartPdf(doc, y);
+      }
+      if (exportOpts.pitch && aiSummaries.pitch) writeTextSection(doc, "Board Pitch", aiSummaries.pitch);
+      if (exportOpts.email && aiSummaries.email) writeTextSection(doc, "CFO Budget Request", aiSummaries.email);
+
+      const pages = doc.getNumberOfPages();
+      for (let i = 1; i <= pages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8); doc.setTextColor(148, 163, 184);
+        doc.text("Powered by The Predictive Engine PRO - ROI Verification Tax Simulator", 14, 290);
+        doc.text(`Page ${i} of ${pages}`, 196, 290, { align: 'right' });
+      }
 
       doc.save(`ROI_Report_Verification_Tax_${timestamp.replace(/\//g, '-')}.pdf`);
     } catch (error) {
@@ -491,72 +620,78 @@ export default function App() {
           </div>
 
           {/* RIGHT COLUMN: Results */}
-          <div className="xl:col-span-8 space-y-6">
-            
+          <div className="xl:col-span-8 space-y-6 min-w-0">
+
+            {/* QUICK GUIDE (free, helps first-time visitors) */}
+            {showGuide && (
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><BookOpen className="w-5 h-5 text-[#f52e01]" /> New here? Three steps</h2>
+                    <p className="text-sm text-slate-600 mt-1">This tool estimates what slow code review costs your team, and what AI review could change.</p>
+                  </div>
+                  <button onClick={() => setShowGuide(false)} className="text-xs font-bold text-slate-500 hover:text-slate-800 shrink-0">Hide</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-slate-600">
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    <div className="font-bold text-slate-900 mb-1">Describe your team</div>
+                    Fill in <em>Current Operations</em>: how many developers you have, how much code they write, and how many hours your senior engineers can spend on reviews.
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    <div className="font-bold text-slate-900 mb-1">Pick an AI scenario</div>
+                    In <em>Optimization Strategy</em>, choose how much review the AI takes over, how often a person still has to step in, and what the software costs.
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    <div className="font-bold text-slate-900 mb-1">Read the result</div>
+                    Check whether your team is overloaded, how much real money AI saves, and how much work it removes from the backlog. Then export a report.
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* OPERATING METRICS */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-                <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Total Daily Demand</div>
-                <div className="text-3xl font-black text-slate-900">{rawReviewDemandHours.toFixed(1)} <span className="text-lg text-slate-400">h</span></div>
-                <div className="text-sm text-slate-500 mt-1">Review hours before automation</div>
-              </div>
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-b-4 border-b-emerald-500">
-                <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Human Capacity Limit</div>
-                <div className="text-3xl font-black text-slate-900">{capacityHours.toFixed(1)} <span className="text-lg text-slate-400">h</span></div>
-                <div className="text-sm text-slate-500 mt-1">Maximum operational limit</div>
-              </div>
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-b-4 border-b-[#f52e01]">
-                <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Daily Tech Debt (Backlog)</div>
-                <div className="text-3xl font-black text-slate-900">{asIsBacklog.toFixed(1)} <span className="text-lg text-slate-400">h</span></div>
-                <div className="text-sm text-slate-500 mt-1">Unreviewed risk per day</div>
-              </div>
+              {[
+                { label: 'Total Daily Demand', value: rawReviewDemandHours.toFixed(1), note: 'Review hours your code needs each day, before any automation.', bar: 'border-b-slate-400' },
+                { label: 'Human Capacity Limit', value: capacityHours.toFixed(1), note: 'The most review hours your senior engineers can give per day.', bar: 'border-b-emerald-500' },
+                { label: 'Daily Backlog Today', value: asIsBacklog.toFixed(1), note: "Hours of code per day that nobody has time to review. This is today's risk.", bar: 'border-b-[#f52e01]' },
+              ].map((m) => (
+                <div key={m.label} className={`min-w-0 bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-b-4 ${m.bar}`}>
+                  <div className="text-slate-500 text-xs font-bold uppercase tracking-wide mb-2 leading-tight">{m.label}</div>
+                  <div className="text-3xl font-black text-slate-900 tabular-nums">{m.value} <span className="text-lg text-slate-400">h</span></div>
+                  <div className="text-sm text-slate-500 mt-1 leading-snug">{m.note}</div>
+                </div>
+              ))}
             </div>
 
             {/* PREMIUM METRICS (PAYWALL) */}
             <div className="relative overflow-hidden bg-[#0B1120] rounded-2xl shadow-lg border border-[#1E2D4A]">
               <div className={`p-6 lg:p-8 transition-all duration-500 ${!isUnlocked ? 'blur-md opacity-40' : ''}`}>
-                
-                <div className="text-white text-sm font-bold uppercase tracking-widest mb-6 flex items-center gap-2">
+                <div className="text-white text-sm font-bold uppercase tracking-widest mb-1 flex items-center gap-2">
                   <PieChart className="w-4 h-4 text-[#f52e01]" /> Financial Splits (CFO Ready)
                 </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                  <div className="bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 border-b-blue-500">
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Hard Capacity Savings</div>
-                    <div className="text-xl font-black text-white">+${realizedHardSavings.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
-                    <div className="text-[10px] text-slate-500 mt-1">Real cash/time freed</div>
-                  </div>
-                  <div className="bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 border-b-amber-500">
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Avoided Review Cost</div>
-                    <div className="text-xl font-black text-amber-400">+${confidenceAdjustedAvoidedCost.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
-                    <div className="text-[10px] text-slate-500 mt-1">Non-cash, {avoidedCostConfidence}% of ${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
-                  </div>
-                  <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1 flex justify-between">
-                       Conservative ROI {isNegativeRoi && <span className="text-red-400">Negative</span>}
-                    </div>
-                    <div className={`text-xl font-black ${isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}`}>
-                      {roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A'}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-1">Hard savings only</div>
-                  </div>
-                  <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${isNegativeStrategic ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Strategic ROI</div>
-                    <div className={`text-xl font-black ${isNegativeStrategic ? 'text-red-400' : 'text-emerald-400'}`}>
-                      {strategicRoi !== null ? `${strategicRoi.toFixed(0)}%` : 'N/A'}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-1">Hard + avoided cost</div>
-                  </div>
-                  <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${paybackMonths === null || isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Payback Period</div>
-                    <div className={`text-xl font-black ${paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}`}>
-                      {paybackMonths !== null ? `${paybackMonths.toFixed(1)} mo` : 'N/A'}
-                    </div>
-                  </div>
-                </div>
+                <p className="text-slate-400 text-xs mb-6">All figures are per year. Savings and costs are kept separate so you can show exactly what is real cash and what is not.</p>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <Kpi label="Hard Capacity Savings" value={`+${fmtMoney(realizedHardSavings)}`} accent="border-b-blue-500"
+                    note="Senior hours truly freed, times hourly rate, times your realization rate. Zero if the team is still overloaded." />
+                  <Kpi label="Avoided Review Cost" value={`+${fmtMoney(confidenceAdjustedAvoidedCost)}`} accent="border-b-amber-500" valueClass="text-amber-400"
+                    note={`Cost of clearing today's backlog by hand, at ${avoidedCostConfidence}% confidence. Not cash.`} />
+                  <Kpi label="Annual Software Cost" value={fmtMoney(calculatedSoftwareCost)} accent="border-b-slate-400"
+                    note={pricingModel === 'saas' ? 'The yearly license you entered.' : 'Estimated API spend, based on the share of code the AI reviews.'} />
+                  <Kpi label="Conservative ROI" value={fmtPct(roiPercentage)} accent={isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
+                    valueClass={isNegativeRoi ? 'text-red-400' : 'text-emerald-400'} badge={isNegativeRoi ? 'Negative' : null}
+                    note="(Hard savings - cost) / cost. The number a CFO will trust." />
+                  <Kpi label="Strategic ROI" value={fmtPct(strategicRoi)} accent={isNegativeStrategic ? 'border-b-red-500' : 'border-b-emerald-500'}
+                    valueClass={isNegativeStrategic ? 'text-red-400' : 'text-emerald-400'}
+                    note="Same formula, adding avoided cost. Shows the full value, but expect questions." />
+                  <Kpi label="Payback Period" value={paybackMonths === null ? 'N/A' : (paybackMonths >= 36 ? `${(paybackMonths / 12).toFixed(1)} yrs` : `${paybackMonths.toFixed(1)} mo`)}
+                    accent={paybackMonths === null || isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
+                    valueClass={paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}
+                    note="Time for hard savings alone to cover the software cost." />
+                </div>
               </div>
-              
+
               {!isUnlocked && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0B1120]/70 z-10 p-6 text-center backdrop-blur-sm">
                   <Lock className="w-12 h-12 text-[#f52e01] mb-4 drop-shadow-lg" />
@@ -569,43 +704,6 @@ export default function App() {
               )}
             </div>
 
-            {/* STACKED BAR CHART (CAPACITY VS DEMAND) */}
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-96 flex flex-col relative overflow-hidden">
-              <div className="flex justify-between items-start mb-6">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                    <TrendingUp className="w-5 h-5 text-slate-700" /> Capacity vs. Demand Analysis
-                  </h3>
-                </div>
-                <button 
-                  onClick={() => isUnlocked ? handleDownloadPDF() : setShowModal(true)}
-                  disabled={isGeneratingPdf}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-semibold border ${isUnlocked ? 'bg-slate-50 hover:bg-slate-100 border-slate-200' : 'bg-orange-50 text-[#f52e01] border-orange-200 hover:bg-orange-100'}`}
-                >
-                  {isGeneratingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : (isUnlocked ? <Download className="w-4 h-4" /> : <Lock className="w-4 h-4" />)}
-                  {isGeneratingPdf ? 'Generating PDF...' : (isUnlocked ? 'Export' : 'Unlock Export')}
-                </button>
-              </div>
-
-              <div className={`flex-1 w-full h-full min-h-[200px] ${!isUnlocked ? 'opacity-30 pointer-events-none' : ''}`}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false}/>
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontWeight: 'bold', fill: '#0B1120'}}/>
-                    <YAxis label={{ value: 'Hours / Day', angle: -90, position: 'insideLeft', fill: '#64748b' }} axisLine={false} tickLine={false}/>
-                    <RechartsTooltip cursor={{fill: 'transparent'}} contentStyle={{borderRadius: '8px', fontWeight: 'bold', border: '1px solid #e2e8f0'}} />
-                    <Legend />
-                    {/* The critical operational limit line */}
-                    <ReferenceLine y={capacityHours} ifOverflow="extendDomain" stroke="#10b981" strokeWidth={3} strokeDasharray="4 4" label={{ position: 'top', value: 'Human Capacity Limit', fill: '#10b981', fontWeight: 'bold' }} />
-                    
-                    <Bar dataKey="HumanExecuted" stackId="a" fill="#3b82f6" name="Human Review Hrs" maxBarSize={100} />
-                    <Bar dataKey="Backlog" stackId="a" fill="#ef4444" name="Unreviewed Risk (Backlog)" radius={[4, 4, 0, 0]} maxBarSize={100} />
-                    <Bar dataKey="AIHandled" stackId="b" fill="#8b5cf6" name="AI Handled Hrs" radius={[4, 4, 0, 0]} maxBarSize={100} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-            
             {/* AI EXECUTIVE PITCH SECTION */}
             {isUnlocked && (
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
@@ -631,13 +729,106 @@ export default function App() {
                      </div>
                    ) : (
                      <div className="flex flex-col items-center justify-center py-4 space-y-4">
-                        <p className="text-slate-400 text-sm italic">Generate a CFO-ready business case outlining hard savings vs risk mitigation.</p>
+                        <p className="text-slate-400 text-sm italic">Generate a CFO-ready business case outlining hard savings vs avoided cost.</p>
                         <button onClick={() => executeAIGeneration(activeAiTab)} className="bg-[#0B1120] hover:bg-slate-800 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><Sparkles className="w-4 h-4"/> Generate Draft</button>
                      </div>
                    )}
                 </div>
               </div>
             )}
+
+            {/* CAPACITY VS DEMAND CHART */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-slate-700" /> Where the review work goes, every day
+              </h3>
+              <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">
+                Each bar is one day of code review. The dashed line is the most your seniors can review. Red past the line is code nobody gets to review; violet is work the AI takes off your seniors' plate.
+              </p>
+
+              <div className={`h-72 w-full transition-all duration-500 ${!isUnlocked ? 'opacity-30 pointer-events-none' : ''}`}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} layout="vertical" margin={{ top: 28, right: 24, left: 8, bottom: 8 }} barCategoryGap="28%">
+                    <defs>
+                      {SEGMENTS.map((sg) => (
+                        <linearGradient key={sg.key} id={`g-${sg.key}`} x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor={sg.color} stopOpacity={0.75} />
+                          <stop offset="100%" stopColor={sg.color} stopOpacity={1} />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid horizontal={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                    <XAxis type="number" unit="h" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                    <YAxis type="category" dataKey="name" width={120} axisLine={false} tickLine={false} tick={{ fill: '#0B1120', fontWeight: 700, fontSize: 13 }} />
+                    <RechartsTooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(15,23,42,0.04)' }} />
+                    <ReferenceLine x={capacityHours} ifOverflow="extendDomain" stroke="#0B1120" strokeWidth={2} strokeDasharray="5 4"
+                      label={{ position: 'top', value: `Senior capacity: ${capacityHours.toFixed(1)}h`, fill: '#0B1120', fontWeight: 700, fontSize: 12 }} />
+                    {SEGMENTS.map((sg) => (
+                      <Bar key={sg.key} dataKey={sg.key} name={sg.label} stackId="w" fill={`url(#g-${sg.key})`} stroke="#fff" strokeWidth={2} radius={6} barSize={52} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+                {SEGMENTS.map((sg) => (
+                  <div key={sg.key} className="flex items-start gap-2 text-xs text-slate-600">
+                    <span className="mt-0.5 w-3 h-3 rounded-full shrink-0" style={{ background: sg.color }} />
+                    <span><strong className="text-slate-800">{sg.label}.</strong> {sg.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* EXPORT PANEL */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Download className="w-5 h-5 text-slate-700" /> Export report (PDF)</h3>
+                  <p className="text-sm text-slate-500 mt-1">Includes your assumptions and results. Choose what else to add.</p>
+                </div>
+                <button
+                  onClick={() => isUnlocked ? handleDownloadPDF() : setShowModal(true)}
+                  disabled={isGeneratingPdf}
+                  className={`flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold border shrink-0 ${isUnlocked ? 'bg-[#0B1120] text-white border-[#0B1120] hover:bg-slate-800' : 'bg-orange-50 text-[#f52e01] border-orange-200 hover:bg-orange-100'}`}
+                >
+                  {isGeneratingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : (isUnlocked ? <Download className="w-4 h-4" /> : <Lock className="w-4 h-4" />)}
+                  {isGeneratingPdf ? 'Generating PDF...' : (isUnlocked ? 'Download PDF' : 'Unlock Export')}
+                </button>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-slate-700">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={exportOpts.chart} onChange={(e) => setExportOpts(o => ({ ...o, chart: e.target.checked }))} className="accent-[#f52e01]" /> Include chart
+                </label>
+                <label className={`flex items-center gap-2 ${aiSummaries.pitch ? 'cursor-pointer' : 'opacity-50'}`}>
+                  <input type="checkbox" disabled={!aiSummaries.pitch} checked={exportOpts.pitch && !!aiSummaries.pitch} onChange={(e) => setExportOpts(o => ({ ...o, pitch: e.target.checked }))} className="accent-[#f52e01]" />
+                  Include Board Pitch {!aiSummaries.pitch && <span className="text-xs text-slate-500">(generate it above first)</span>}
+                </label>
+                <label className={`flex items-center gap-2 ${aiSummaries.email ? 'cursor-pointer' : 'opacity-50'}`}>
+                  <input type="checkbox" disabled={!aiSummaries.email} checked={exportOpts.email && !!aiSummaries.email} onChange={(e) => setExportOpts(o => ({ ...o, email: e.target.checked }))} className="accent-[#f52e01]" />
+                  Include CFO Email {!aiSummaries.email && <span className="text-xs text-slate-500">(generate it above first)</span>}
+                </label>
+              </div>
+            </div>
+
+            {/* METHODOLOGY */}
+            <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <summary className="cursor-pointer font-bold text-slate-900 flex items-center gap-2 list-none">
+                <Info className="w-5 h-5 text-slate-500" /> How this is calculated
+                <span className="ml-auto text-xs font-semibold text-slate-500 group-open:hidden">Show</span>
+                <span className="ml-auto text-xs font-semibold text-slate-500 hidden group-open:inline">Hide</span>
+              </summary>
+              <div className="mt-4 space-y-4 text-sm text-slate-600 leading-relaxed">
+                <p><strong className="text-slate-800">Demand.</strong> Daily lines of code, divided by 500, times the minutes it takes to audit 500 lines. That is how many review hours your code needs each day.</p>
+                <p><strong className="text-slate-800">Capacity and backlog.</strong> Capacity is seniors times the review hours each can give per day. Whatever demand exceeds capacity becomes backlog: code that is delayed or merged without a proper review.</p>
+                <p><strong className="text-slate-800">AI scenario.</strong> The AI takes over the share of review you choose. Human-in-the-loop is the share of that work a person still has to fix, and it goes back to your seniors.</p>
+                <p><strong className="text-slate-800">Hard savings.</strong> Only counted when seniors truly spend fewer hours reviewing. If they are overloaded before and after AI, the AI clears backlog but frees no senior time, so hard savings are zero. The realization rate is how much of the freed time turns into real cash.</p>
+                <p><strong className="text-slate-800">Avoided review cost.</strong> What it would cost to clear today's backlog manually (hours times hourly rate), reduced by your confidence %. It is a comparison, not money in the bank.</p>
+                <p><strong className="text-slate-800">ROI.</strong> (Benefit - software cost) / software cost. Conservative uses hard savings only. Strategic adds avoided cost. Payback is the software cost divided by monthly hard savings.</p>
+                <p className="text-xs text-slate-500">Assumptions: {workingDaysPerYear} working days per year, steady results from day one, no setup or training cost. These are estimates to support a decision, not guarantees.</p>
+              </div>
+            </details>
+
           </div>
         </div>
       </div>
