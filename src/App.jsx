@@ -233,6 +233,7 @@ export default function App() {
     e.preventDefault();
     setLeadError("");
     setLeadSubmitting(true);
+    let subscribed = false;
     try {
       const res = await fetch('/api/subscribe', {
         method: 'POST',
@@ -244,9 +245,18 @@ export default function App() {
         setLeadSubmitting(false);
         return;
       }
+      subscribed = res.ok;
     } catch (err) {
-      // Network/endpoint failure: do not block the user from the tool
       console.error("Subscribe error:", err);
+    }
+    // Local development only: lets you test the PRO view before /api/subscribe exists.
+    // In production builds (import.meta.env.DEV is false) access requires a successful subscription.
+    if (!subscribed && import.meta.env.DEV) subscribed = true;
+
+    if (!subscribed) {
+      setLeadError("We couldn't complete your subscription. Please try again in a moment.");
+      setLeadSubmitting(false);
+      return;
     }
     try { localStorage.setItem('tpe_pro_unlocked', '1'); } catch { /* ignore */ }
     setIsUnlocked(true);
@@ -365,7 +375,6 @@ export default function App() {
           ['Human-in-the-loop override', `${humanInTheLoop}%`],
           ['Savings realization rate', `${savingsRealizationRate}%`],
           ['Confidence in avoided cost', `${avoidedCostConfidence}%`],
-          ['Working days per year', `${workingDaysPerYear}`],
         ],
         headStyles: { fillColor: [15, 23, 42] },
       });
@@ -674,17 +683,17 @@ export default function App() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                   <Kpi label="Hard Capacity Savings" value={`+${fmtMoney(realizedHardSavings)}`} accent="border-b-blue-500"
-                    note="Senior hours truly freed, times hourly rate, times your realization rate. Zero if the team is still overloaded." />
+                    note="Real money saved when AI genuinely frees senior time. Close to zero if your team stays overloaded." />
                   <Kpi label="Avoided Review Cost" value={`+${fmtMoney(confidenceAdjustedAvoidedCost)}`} accent="border-b-amber-500" valueClass="text-amber-400"
-                    note={`Cost of clearing today's backlog by hand, at ${avoidedCostConfidence}% confidence. Not cash.`} />
+                    note={`What clearing today's backlog by hand would cost, weighted by your ${avoidedCostConfidence}% confidence. Not cash.`} />
                   <Kpi label="Annual Software Cost" value={fmtMoney(calculatedSoftwareCost)} accent="border-b-slate-400"
                     note={pricingModel === 'saas' ? 'The yearly license you entered.' : 'Estimated API spend, based on the share of code the AI reviews.'} />
                   <Kpi label="Conservative ROI" value={fmtPct(roiPercentage)} accent={isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
                     valueClass={isNegativeRoi ? 'text-red-400' : 'text-emerald-400'} badge={isNegativeRoi ? 'Negative' : null}
-                    note="(Hard savings - cost) / cost. The number a CFO will trust." />
+                    note="Return counting only real savings. The number a CFO will trust." />
                   <Kpi label="Strategic ROI" value={fmtPct(strategicRoi)} accent={isNegativeStrategic ? 'border-b-red-500' : 'border-b-emerald-500'}
                     valueClass={isNegativeStrategic ? 'text-red-400' : 'text-emerald-400'}
-                    note="Same formula, adding avoided cost. Shows the full value, but expect questions." />
+                    note="Return that also counts avoided cost. Shows the fuller picture, but expect questions." />
                   <Kpi label="Payback Period" value={paybackMonths === null ? 'N/A' : (paybackMonths >= 36 ? `${(paybackMonths / 12).toFixed(1)} yrs` : `${paybackMonths.toFixed(1)} mo`)}
                     accent={paybackMonths === null || isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
                     valueClass={paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}
@@ -811,21 +820,21 @@ export default function App() {
               </div>
             </div>
 
-            {/* METHODOLOGY */}
+            {/* HOW TO READ (no formulas on purpose) */}
             <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <summary className="cursor-pointer font-bold text-slate-900 flex items-center gap-2 list-none">
-                <Info className="w-5 h-5 text-slate-500" /> How this is calculated
+                <Info className="w-5 h-5 text-slate-500" /> How to read these results
                 <span className="ml-auto text-xs font-semibold text-slate-500 group-open:hidden">Show</span>
                 <span className="ml-auto text-xs font-semibold text-slate-500 hidden group-open:inline">Hide</span>
               </summary>
               <div className="mt-4 space-y-4 text-sm text-slate-600 leading-relaxed">
-                <p><strong className="text-slate-800">Demand.</strong> Daily lines of code, divided by 500, times the minutes it takes to audit 500 lines. That is how many review hours your code needs each day.</p>
-                <p><strong className="text-slate-800">Capacity and backlog.</strong> Capacity is seniors times the review hours each can give per day. Whatever demand exceeds capacity becomes backlog: code that is delayed or merged without a proper review.</p>
-                <p><strong className="text-slate-800">AI scenario.</strong> The AI takes over the share of review you choose. Human-in-the-loop is the share of that work a person still has to fix, and it goes back to your seniors.</p>
-                <p><strong className="text-slate-800">Hard savings.</strong> Only counted when seniors truly spend fewer hours reviewing. If they are overloaded before and after AI, the AI clears backlog but frees no senior time, so hard savings are zero. The realization rate is how much of the freed time turns into real cash.</p>
-                <p><strong className="text-slate-800">Avoided review cost.</strong> What it would cost to clear today's backlog manually (hours times hourly rate), reduced by your confidence %. It is a comparison, not money in the bank.</p>
-                <p><strong className="text-slate-800">ROI.</strong> (Benefit - software cost) / software cost. Conservative uses hard savings only. Strategic adds avoided cost. Payback is the software cost divided by monthly hard savings.</p>
-                <p className="text-xs text-slate-500">Assumptions: {workingDaysPerYear} working days per year, steady results from day one, no setup or training cost. These are estimates to support a decision, not guarantees.</p>
+                <p><strong className="text-slate-800">Overload (backlog).</strong> Every team has a limit on how much code its senior engineers can review in a day. When the code coming in is more than that limit, the extra piles up as backlog: reviews that get delayed or skipped. That pile is the risk this tool puts a number on.</p>
+                <p><strong className="text-slate-800">What AI changes.</strong> AI takes over part of the reviewing. Some of its work still needs a person to step in, so we let you set how often that happens. The chart shows who ends up doing the work, with and without AI.</p>
+                <p><strong className="text-slate-800">Hard savings.</strong> Real money, and only when your seniors truly end up spending less time on reviews. If they are overloaded both before and after AI, they stay just as busy, so there is little cash to save. You also choose how much of any freed time you expect to turn into real savings.</p>
+                <p><strong className="text-slate-800">Avoided cost.</strong> The backlog AI clears is work you would otherwise have to pay people to do. It is a useful comparison, but it is not cash, so you decide how much of it you are confident to count.</p>
+                <p><strong className="text-slate-800">Two ROI numbers, on purpose.</strong> The conservative one counts only real savings and is the one a finance team will trust. The strategic one also counts avoided cost and shows the fuller picture. Showing both keeps the case honest.</p>
+                <p><strong className="text-slate-800">A common situation.</strong> A busy team with a large backlog adopts AI. The backlog shrinks a lot, but the seniors stay just as busy. The conservative ROI looks weak and the strategic ROI looks strong. Neither is wrong: the value is in risk and speed, not in cutting payroll.</p>
+                <p className="text-xs text-slate-500">These are estimates to support a decision, based on the numbers you enter. They are not guarantees.</p>
               </div>
             </details>
 
