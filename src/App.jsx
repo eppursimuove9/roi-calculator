@@ -10,6 +10,53 @@ const clamp = (value, min, max) => {
   return Math.min(max, Math.max(min, value));
 };
 
+// --- CONTROL COMPONENT (SLIDER + INPUT) ---
+function ControlSlider({ 
+  label, value, min, max, step = 1, setter, suffix = "", prefix = "", tooltip, 
+  highlightClass = "text-slate-700 bg-slate-50 border-slate-200 focus:ring-slate-500", 
+  accentClass = "accent-slate-600" 
+}) {
+  const [inputValue, setInputValue] = useState(value.toString());
+
+  useEffect(() => { setInputValue(value.toString()); }, [value]);
+
+  const handleInputChange = (e) => setInputValue(e.target.value);
+  const handleInputBlur = () => {
+    let parsed = parseFloat(inputValue);
+    const finalValue = clamp(parsed, min, max);
+    setInputValue(finalValue.toString());
+    setter(finalValue);
+  };
+  const handleSliderChange = (e) => {
+    const val = parseFloat(e.target.value);
+    setInputValue(val.toString());
+    setter(val);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <label className="font-semibold text-sm text-slate-700 flex items-center gap-1">
+          {label}
+          {tooltip && <span title={tooltip} className="cursor-help text-slate-400 hover:text-slate-600"><Info className="w-4 h-4"/></span>}
+        </label>
+        <div className="flex items-center">
+          {prefix && <span className="text-slate-500 font-semibold mr-1">{prefix}</span>}
+          <input 
+            type="number" value={inputValue} min={min} max={max} step={step}
+            onChange={handleInputChange} onBlur={handleInputBlur}
+            className={`w-24 text-right font-bold border rounded px-2 py-1 outline-none focus:ring-2 transition-all ${highlightClass}`}
+          />
+          {suffix && <span className="text-slate-500 font-semibold ml-1">{suffix}</span>}
+        </div>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={handleSliderChange} className={`w-full cursor-pointer ${accentClass}`} />
+    </div>
+  );
+}
+
+const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 export default function App() {
   // --- STATE AND VARIABLES (Current Inputs) ---
   const [devs, setDevs] = useState(12);
@@ -31,7 +78,13 @@ export default function App() {
   const [costPer1kLoc, setCostPer1kLoc] = useState(0.15);
 
   // --- PAYWALL STATE (Lead Capture) ---
-  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [avoidedCostConfidence, setAvoidedCostConfidence] = useState(50); // % of avoided manual-review cost a CFO would accept
+  const [leadEmail, setLeadEmail] = useState("");
+  const [leadError, setLeadError] = useState("");
+  const [leadSubmitting, setLeadSubmitting] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(() => {
+    try { return localStorage.getItem('tpe_pro_unlocked') === '1'; } catch { return false; }
+  });
   const [showModal, setShowModal] = useState(false);
 
   // --- AI STATE (Gemini API with Cache) ---
@@ -54,7 +107,7 @@ export default function App() {
     setAiError("");
   }, [
     devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, 
-    hourlyRate, targetAutomation, humanInTheLoop, softwareCost, pricingModel, costPer1kLoc, savingsRealizationRate
+    hourlyRate, targetAutomation, humanInTheLoop, softwareCost, pricingModel, costPer1kLoc, savingsRealizationRate, avoidedCostConfidence
   ]);
 
   // --- LOGIC AND MATH CALCULATIONS (CFO-READY) ---
@@ -68,7 +121,12 @@ export default function App() {
   const capacityHours = seniors * dailyReviewHoursPerSenior;
 
   // As-Is Scenario
-  const asIsHumanDemand = rawReviewDemandHours * (1 - (automation / 100));
+  // Same human-in-the-loop rate is applied to current automation so both scenarios are comparable
+  const asIsHitl = humanInTheLoop / 100;
+  const asIsAiHandledRaw = rawReviewDemandHours * (automation / 100);
+  const asIsAiFailedToHuman = asIsAiHandledRaw * asIsHitl;
+  const asIsNetAiHandled = asIsAiHandledRaw - asIsAiFailedToHuman;
+  const asIsHumanDemand = (rawReviewDemandHours * (1 - (automation / 100))) + asIsAiFailedToHuman;
   const asIsExecuted = Math.min(asIsHumanDemand, capacityHours);
   const asIsBacklog = Math.max(0, asIsHumanDemand - capacityHours);
 
@@ -92,11 +150,14 @@ export default function App() {
 
   // 2. Risk Mitigation (Value of Tech Debt / Backlog cleared by AI)
   const techDebtClearedDailyHours = Math.max(0, asIsBacklog - toBeBacklog);
+  // Counterfactual: what it would cost to clear this backlog manually (hours x rate). Not cash.
   const annualTechDebtValue = techDebtClearedDailyHours * workingDaysPerYear * hourlyRate;
+  const confidenceAdjustedAvoidedCost = annualTechDebtValue * (avoidedCostConfidence / 100);
 
   // Software Costing
   const annualLoc = totalDailyLoc * workingDaysPerYear;
-  const tokenAnnualCost = (annualLoc / 1000) * costPer1kLoc;
+  // Tokens are only consumed on the code the AI actually reviews
+  const tokenAnnualCost = (annualLoc / 1000) * costPer1kLoc * toBeAiCoverage;
   const calculatedSoftwareCost = pricingModel === 'saas' ? softwareCost : tokenAnnualCost;
 
   // ROI & Payback (Calculated strictly on Hard Savings)
@@ -105,13 +166,18 @@ export default function App() {
   const paybackMonths = realizedHardSavings > 0 ? (calculatedSoftwareCost / realizedHardSavings) * 12 : null;
   const isNegativeRoi = roiPercentage !== null && roiPercentage < 0;
 
+  // Strategic view: hard savings + confidence-adjusted avoided cost (clearly labeled as non-cash)
+  const strategicBenefit = realizedHardSavings + confidenceAdjustedAvoidedCost;
+  const strategicRoi = calculatedSoftwareCost > 0 ? ((strategicBenefit - calculatedSoftwareCost) / calculatedSoftwareCost) * 100 : null;
+  const isNegativeStrategic = strategicRoi !== null && strategicRoi < 0;
+
   // --- CHART DATA (Capacity vs Demand Stacked Bar) ---
   const chartData = [
     { 
       name: "Current (As-Is)", 
       HumanExecuted: Number(asIsExecuted.toFixed(1)), 
       Backlog: Number(asIsBacklog.toFixed(1)), 
-      AIHandled: 0 
+      AIHandled: Number(asIsNetAiHandled.toFixed(1)) 
     },
     { 
       name: "Optimized (To-Be)", 
@@ -121,10 +187,29 @@ export default function App() {
     }
   ];
 
-  const handleUnlock = (e) => {
+  const handleUnlock = async (e) => {
     e.preventDefault();
+    setLeadError("");
+    setLeadSubmitting(true);
+    try {
+      const res = await fetch('/api/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: leadEmail.trim() }),
+      });
+      if (res.status === 400) {
+        setLeadError("Please enter a valid email address.");
+        setLeadSubmitting(false);
+        return;
+      }
+    } catch (err) {
+      // Network/endpoint failure: do not block the user from the tool
+      console.error("Subscribe error:", err);
+    }
+    try { localStorage.setItem('tpe_pro_unlocked', '1'); } catch { /* ignore */ }
     setIsUnlocked(true);
     setShowModal(false);
+    setLeadSubmitting(false);
   };
 
   // --- PDF EXPORT FUNCTION ---
@@ -145,6 +230,24 @@ export default function App() {
 
       autoTable(doc, {
         startY: 45,
+        head: [['Assumption', 'Value']],
+        body: [
+          ['Active developers', `${devs}`],
+          ['LOC per dev / day', `${locPerDev}`],
+          ['Senior engineers / review hrs per senior per day', `${seniors} / ${dailyReviewHoursPerSenior}h`],
+          ['Minutes to audit 500 LOC', `${minsPer500}m`],
+          ['Senior hourly rate', `$${hourlyRate}`],
+          ['AI automation (current -> target)', `${automation}% -> ${targetAutomation}%`],
+          ['Human-in-the-loop override', `${humanInTheLoop}%`],
+          ['Savings realization rate', `${savingsRealizationRate}%`],
+          ['Confidence in avoided cost', `${avoidedCostConfidence}%`],
+          ['Working days per year', `${workingDaysPerYear}`],
+        ],
+        headStyles: { fillColor: [15, 23, 42] },
+      });
+
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 10,
         head: [['Operational Metric', 'As-Is', 'To-Be']],
         body: [
           ['Daily Human Demand', `${asIsHumanDemand.toFixed(1)}h`, `${toBeTotalHumanDemand.toFixed(1)}h`],
@@ -155,21 +258,25 @@ export default function App() {
       });
 
       const finalY = doc.lastAutoTable.finalY || 45;
+      if (finalY > 215) doc.addPage();
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Financial Impact Summary", 14, finalY + 15);
+      const fy = finalY > 215 ? 0 : finalY;
+      doc.text("Financial Impact Summary", 14, fy + 15);
 
       const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
       const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} Months` : 'N/A';
 
       autoTable(doc, {
-        startY: finalY + 20,
+        startY: fy + 20,
         head: [['Financial Indicator', 'Calculated Value']],
         body: [
           ['Realized Hard Capacity Savings', `$${realizedHardSavings.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Risk Mitigation Value (Debt Cleared)', `$${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Avoided Manual Review Cost (non-cash, 100%)', `$${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
+          ['Avoided Cost after confidence discount', `$${confidenceAdjustedAvoidedCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
           ['Calculated Annual Software Cost', `$${calculatedSoftwareCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`],
-          ['Projected ROI (Hard Savings Only)', `${roiStr}`],
+          ['Conservative ROI (Hard Savings Only)', `${roiStr}`],
+          ['Strategic ROI (Hard + Avoided Cost)', `${strategicRoi !== null ? strategicRoi.toFixed(0) + '%' : 'N/A'}`],
           ['Payback Period', `${paybackStr}`],
         ],
         headStyles: { fillColor: [245, 46, 1] }, 
@@ -191,7 +298,7 @@ export default function App() {
   // --- MARKDOWN PARSER ---
   const formatAIResponse = (text) => {
     if (!text) return "";
-    let formatted = text
+    let formatted = escapeHtml(text)
       .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-slate-900">$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/^[\s]*[\-\*]\s+(.*)$/gm, '<li class="ml-6 list-disc mb-1">$1</li>');
@@ -222,7 +329,8 @@ export default function App() {
       - We are accumulating a daily backlog of ${asIsBacklog.toFixed(1)} hours of unreviewed code because human capacity is capped at ${capacityHours} hrs/day.
       
       Target Scenario Value:
-      - Risk Mitigation: The AI will clear $${annualTechDebtValue.toLocaleString()} USD in annualized technical debt risk.
+      - Avoided cost (NOT cash): clearing the backlog avoids roughly $${annualTechDebtValue.toLocaleString()} USD/year of manual review effort; a conservative ${avoidedCostConfidence}% confidence view is $${confidenceAdjustedAvoidedCost.toLocaleString()} USD.
+      - Strategic ROI (hard savings + confidence-adjusted avoided cost): ${strategicRoi !== null ? strategicRoi.toFixed(0) + '%' : 'N/A'}.
       - Hard Capacity Savings: We will capture $${realizedHardSavings.toLocaleString()} USD in real capacity savings (Realization rate: ${savingsRealizationRate}%).
       - ROI (Hard Savings only): ${roiStr}. Payback: ${paybackStr}.
       
@@ -235,7 +343,7 @@ export default function App() {
       
       Financial Data:
       1. We are currently blocked, accumulating ${asIsBacklog.toFixed(1)} hours of unreviewed tech debt daily.
-      2. The investment eradicates $${annualTechDebtValue.toLocaleString()} USD in unreviewed risk annually.
+      2. The investment avoids about $${annualTechDebtValue.toLocaleString()} USD/year of manual review effort on the backlog (non-cash; ${avoidedCostConfidence}% confidence view: $${confidenceAdjustedAvoidedCost.toLocaleString()} USD). Strategic ROI: ${strategicRoi !== null ? strategicRoi.toFixed(0) + '%' : 'N/A'}.
       3. It generates $${realizedHardSavings.toLocaleString()} USD in realized hard savings.
       
       ${isNegativeRoi ?
@@ -265,51 +373,6 @@ export default function App() {
     } finally {
       setAiLoading(false);
     }
-  };
-
-  // --- CONTROL COMPONENT (SLIDER + INPUT) ---
-  const ControlSlider = ({ 
-    label, value, min, max, step = 1, setter, suffix = "", prefix = "", tooltip, 
-    highlightClass = "text-slate-700 bg-slate-50 border-slate-200 focus:ring-slate-500", 
-    accentClass = "accent-slate-600" 
-  }) => {
-    const [inputValue, setInputValue] = useState(value.toString());
-
-    useEffect(() => { setInputValue(value.toString()); }, [value]);
-
-    const handleInputChange = (e) => setInputValue(e.target.value);
-    const handleInputBlur = () => {
-      let parsed = parseFloat(inputValue);
-      const finalValue = clamp(parsed, min, max);
-      setInputValue(finalValue.toString());
-      setter(finalValue);
-    };
-    const handleSliderChange = (e) => {
-      const val = parseFloat(e.target.value);
-      setInputValue(val.toString());
-      setter(val);
-    };
-
-    return (
-      <div className="space-y-3">
-        <div className="flex justify-between items-center">
-          <label className="font-semibold text-sm text-slate-700 flex items-center gap-1">
-            {label}
-            {tooltip && <span title={tooltip} className="cursor-help text-slate-400 hover:text-slate-600"><Info className="w-4 h-4"/></span>}
-          </label>
-          <div className="flex items-center">
-            {prefix && <span className="text-slate-500 font-semibold mr-1">{prefix}</span>}
-            <input 
-              type="number" value={inputValue} min={min} max={max} step={step}
-              onChange={handleInputChange} onBlur={handleInputBlur}
-              className={`w-24 text-right font-bold border rounded px-2 py-1 outline-none focus:ring-2 transition-all ${highlightClass}`}
-            />
-            {suffix && <span className="text-slate-500 font-semibold ml-1">{suffix}</span>}
-          </div>
-        </div>
-        <input type="range" min={min} max={max} step={step} value={value} onChange={handleSliderChange} className={`w-full cursor-pointer ${accentClass}`} />
-      </div>
-    );
   };
 
   return (
@@ -345,7 +408,7 @@ export default function App() {
             ROI Calculator: <span className="text-[#f52e01]">Verification Tax</span>
           </h1>
           <p className="text-lg text-slate-600 max-w-4xl">
-            Model technical debt eradication. Separate "Hard Cash Savings" from "Risk Mitigation" to build a bulletproof CFO-ready business case for Agentic CI/CD platforms.
+            Model technical debt eradication. Separate "Hard Cash Savings" from "Avoided Cost" to build a bulletproof CFO-ready business case for Agentic CI/CD platforms.
           </p>
         </div>
 
@@ -393,6 +456,11 @@ export default function App() {
                 />
 
                 <ControlSlider 
+                  label="Confidence in Avoided Cost" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%"
+                  tooltip="How much of the avoided manual-review cost a CFO would accept as real value. It is a counterfactual, not cash. Be conservative."
+                />
+
+                <ControlSlider 
                   label="Savings Realization Rate" value={savingsRealizationRate} min={0} max={100} step={5} setter={setSavingsRealizationRate} suffix="%"
                   tooltip="Percentage of freed human capacity converted into liquid cash savings."
                 />
@@ -429,8 +497,8 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
                 <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Total Daily Demand</div>
-                <div className="text-3xl font-black text-slate-900">{asIsHumanDemand.toFixed(1)} <span className="text-lg text-slate-400">h</span></div>
-                <div className="text-sm text-slate-500 mt-1">Review hours required</div>
+                <div className="text-3xl font-black text-slate-900">{rawReviewDemandHours.toFixed(1)} <span className="text-lg text-slate-400">h</span></div>
+                <div className="text-sm text-slate-500 mt-1">Review hours before automation</div>
               </div>
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-b-4 border-b-emerald-500">
                 <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Human Capacity Limit</div>
@@ -452,24 +520,32 @@ export default function App() {
                   <PieChart className="w-4 h-4 text-[#f52e01]" /> Financial Splits (CFO Ready)
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
                   <div className="bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 border-b-blue-500">
                     <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Hard Capacity Savings</div>
                     <div className="text-xl font-black text-white">+${realizedHardSavings.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
                     <div className="text-[10px] text-slate-500 mt-1">Real cash/time freed</div>
                   </div>
                   <div className="bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 border-b-amber-500">
-                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Risk Mitigation Value</div>
-                    <div className="text-xl font-black text-amber-400">+${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
-                    <div className="text-[10px] text-slate-500 mt-1">Tech debt cleared</div>
+                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Avoided Review Cost</div>
+                    <div className="text-xl font-black text-amber-400">+${confidenceAdjustedAvoidedCost.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
+                    <div className="text-[10px] text-slate-500 mt-1">Non-cash, {avoidedCostConfidence}% of ${annualTechDebtValue.toLocaleString(undefined, {maximumFractionDigits:0})}</div>
                   </div>
                   <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
                     <div className="text-slate-400 text-[10px] font-bold uppercase mb-1 flex justify-between">
-                       Hard ROI {isNegativeRoi && <span className="text-red-400">Negative</span>}
+                       Conservative ROI {isNegativeRoi && <span className="text-red-400">Negative</span>}
                     </div>
                     <div className={`text-xl font-black ${isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}`}>
                       {roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A'}
                     </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Hard savings only</div>
+                  </div>
+                  <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${isNegativeStrategic ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
+                    <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Strategic ROI</div>
+                    <div className={`text-xl font-black ${isNegativeStrategic ? 'text-red-400' : 'text-emerald-400'}`}>
+                      {strategicRoi !== null ? `${strategicRoi.toFixed(0)}%` : 'N/A'}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Hard + avoided cost</div>
                   </div>
                   <div className={`bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${paybackMonths === null || isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}`}>
                     <div className="text-slate-400 text-[10px] font-bold uppercase mb-1">Payback Period</div>
@@ -485,7 +561,7 @@ export default function App() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0B1120]/70 z-10 p-6 text-center backdrop-blur-sm">
                   <Lock className="w-12 h-12 text-[#f52e01] mb-4 drop-shadow-lg" />
                   <h4 className="text-2xl font-extrabold text-white mb-2">Unlock True CFO Metrics</h4>
-                  <p className="text-slate-300 text-sm mb-6 max-w-md">Split ROI into "Hard Savings" vs "Risk Mitigation" to build a bulletproof business case.</p>
+                  <p className="text-slate-300 text-sm mb-6 max-w-md">Split ROI into "Hard Savings" vs "Avoided Cost" to build a bulletproof business case.</p>
                   <button onClick={() => setShowModal(true)} className="bg-[#f52e01] hover:bg-[#ff4117] text-white font-bold py-3 px-8 rounded-xl shadow-xl flex items-center gap-2">
                     Unlock Pro Analytics <ChevronRight className="w-5 h-5" />
                   </button>
@@ -520,7 +596,7 @@ export default function App() {
                     <RechartsTooltip cursor={{fill: 'transparent'}} contentStyle={{borderRadius: '8px', fontWeight: 'bold', border: '1px solid #e2e8f0'}} />
                     <Legend />
                     {/* The critical operational limit line */}
-                    <ReferenceLine y={capacityHours} stroke="#10b981" strokeWidth={3} strokeDasharray="4 4" label={{ position: 'top', value: 'Human Capacity Limit', fill: '#10b981', fontWeight: 'bold' }} />
+                    <ReferenceLine y={capacityHours} ifOverflow="extendDomain" stroke="#10b981" strokeWidth={3} strokeDasharray="4 4" label={{ position: 'top', value: 'Human Capacity Limit', fill: '#10b981', fontWeight: 'bold' }} />
                     
                     <Bar dataKey="HumanExecuted" stackId="a" fill="#3b82f6" name="Human Review Hrs" maxBarSize={100} />
                     <Bar dataKey="Backlog" stackId="a" fill="#ef4444" name="Unreviewed Risk (Backlog)" radius={[4, 4, 0, 0]} maxBarSize={100} />
@@ -576,8 +652,9 @@ export default function App() {
             <h3 className="text-2xl font-extrabold text-slate-900 mb-2">Unlock PRO Analytics</h3>
             <p className="text-slate-600 mb-6">Subscribe to unlock the CFO Financial Split model, generate PDF reports, and write AI-driven Board Pitches.</p>
             <form onSubmit={handleUnlock} className="space-y-4">
-              <input type="email" required placeholder="alex@yourcompany.com" className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#f52e01] outline-none" />
-              <button type="submit" className="w-full bg-[#f52e01] hover:bg-[#ff4117] text-white font-bold py-3 rounded-lg shadow-md transition-colors">Subscribe & Unlock Free</button>
+              <input type="email" required value={leadEmail} onChange={(e) => setLeadEmail(e.target.value)} placeholder="alex@yourcompany.com" className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#f52e01] outline-none" />
+              {leadError && <p className="text-sm text-red-600">{leadError}</p>}
+              <button type="submit" disabled={leadSubmitting} className="w-full bg-[#f52e01] hover:bg-[#ff4117] disabled:opacity-60 text-white font-bold py-3 rounded-lg shadow-md transition-colors">{leadSubmitting ? 'Unlocking...' : 'Subscribe & Unlock Free'}</button>
             </form>
             <div className="mt-6 flex justify-between items-center text-xs text-slate-500">
                <span><Lock className="w-3 h-3 inline"/> 100% Secure.</span>
