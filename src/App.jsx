@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, ReferenceLine, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AlertTriangle, TrendingUp, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, RefreshCw, Target, Rocket, PieChart, BookOpen } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -38,7 +38,7 @@ function ControlSlider({
       <div className="flex justify-between items-center">
         <label className="font-semibold text-sm text-slate-700 flex items-center gap-1">
           {label}
-          {tooltip && <span title={tooltip} className="cursor-help text-slate-400 hover:text-slate-600"><Info className="w-4 h-4"/></span>}
+          {tooltip && <HelpTip text={tooltip} />}
         </label>
         <div className="flex items-center">
           {prefix && <span className="text-slate-500 font-semibold mr-1">{prefix}</span>}
@@ -55,6 +55,9 @@ function ControlSlider({
   );
 }
 
+// Set to false to lock the As-Is panel behind the subscription too.
+const AS_IS_FREE = true;
+
 const fmtMoney = (n) => {
   if (n === null || n === undefined || !isFinite(n)) return 'N/A';
   const abs = Math.abs(n);
@@ -62,6 +65,7 @@ const fmtMoney = (n) => {
   if (abs >= 1e7) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
   return `${sign}$${Math.round(abs).toLocaleString()}`;
 };
+const signedMoney = (n) => `${n < 0 ? '-' : '+'}${fmtMoney(Math.abs(n))}`;
 const fmtPct = (n) => (n === null || n === undefined || !isFinite(n) ? 'N/A' : `${Math.round(n).toLocaleString()}%`);
 
 // Chart segments, in stacking order (left to right). The dashed capacity line sits at the end of the first two.
@@ -72,15 +76,62 @@ const SEGMENTS = [
   { key: 'AIHandled', label: 'Reviewed by AI', color: '#8b5cf6', pdf: [139, 92, 246], hint: 'Does not use senior time.' },
 ];
 
-function Kpi({ label, value, note, accent = 'border-b-slate-500', valueClass = 'text-white', badge = null }) {
+function HelpTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const pointer = useRef('');
   return (
-    <div className={`min-w-0 bg-[#111A2E] p-4 rounded-xl border border-[#1E2D4A] border-b-2 ${accent} flex flex-col gap-1`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wide leading-tight">{label}</div>
-        {badge && <span className="shrink-0 text-[10px] font-bold text-red-400">{badge}</span>}
+    <span
+      className="relative inline-flex"
+      onPointerEnter={(e) => { if (e.pointerType === 'mouse') setOpen(true); }}
+      onPointerLeave={(e) => { if (e.pointerType === 'mouse') setOpen(false); }}
+    >
+      <button
+        type="button"
+        aria-label="What is this?"
+        aria-expanded={open}
+        onPointerDown={(e) => { pointer.current = e.pointerType; }}
+        onClick={() => { if (pointer.current !== 'mouse') setOpen((o) => !o); }}
+        onBlur={() => setOpen(false)}
+        className="text-slate-400 hover:text-slate-700 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f52e01]"
+      >
+        <Info className="w-4 h-4" />
+      </button>
+      {open && (
+        <span role="tooltip" className="absolute z-30 left-1/2 -translate-x-1/2 bottom-full mb-2 w-56 rounded-lg bg-[#0B1120] text-white text-xs leading-snug font-normal normal-case tracking-normal p-3 shadow-xl">
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function SplitPanel({ title, subtitle, accent, hero, rows, locked = false, onUnlock }) {
+  return (
+    <div className={`relative min-w-0 rounded-xl border border-[#1E2D4A] border-t-4 ${accent} bg-[#111A2E] overflow-hidden`}>
+      <div className={`p-4 ${locked ? 'blur-md opacity-40 select-none' : ''}`} aria-hidden={locked}>
+        <div className="text-white font-bold text-sm leading-tight">{title}</div>
+        <div className="text-slate-400 text-xs mb-3">{subtitle}</div>
+        <div className="mb-2 pb-3 border-b border-[#1E2D4A]">
+          <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wide leading-tight">{hero.label}</div>
+          <div className={`text-2xl font-black tabular-nums leading-tight break-words ${hero.tone || 'text-white'}`}>{hero.value}</div>
+          {hero.note && <div className="text-[11px] text-slate-400 leading-snug mt-1">{hero.note}</div>}
+        </div>
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-start justify-between gap-3 py-2 border-b border-[#1E2D4A] last:border-0">
+            <span className="text-xs text-slate-400 leading-snug min-w-0">{r.label}</span>
+            <span className={`text-sm font-bold tabular-nums text-right shrink-0 max-w-[55%] break-words ${r.tone || 'text-white'}`}>{r.value}</span>
+          </div>
+        ))}
       </div>
-      <div className={`text-2xl font-black tabular-nums leading-tight break-words ${valueClass}`}>{value}</div>
-      <div className="text-[11px] text-slate-400 leading-snug">{note}</div>
+      {locked && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center p-4 bg-[#0B1120]/70 backdrop-blur-sm">
+          <Lock className="w-8 h-8 text-[#f52e01] mb-2" />
+          <p className="text-white text-sm font-bold mb-3">Subscribe to unlock</p>
+          <button onClick={onUnlock} className="bg-[#f52e01] hover:bg-[#ff4117] text-white text-sm font-bold py-2 px-5 rounded-lg flex items-center gap-1">
+            Unlock <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -221,6 +272,62 @@ export default function App() {
   const strategicBenefit = realizedHardSavings + confidenceAdjustedAvoidedCost;
   const strategicRoi = calculatedSoftwareCost > 0 ? ((strategicBenefit - calculatedSoftwareCost) / calculatedSoftwareCost) * 100 : null;
   const isNegativeStrategic = strategicRoi !== null && strategicRoi < 0;
+
+  // --- Three views: As-Is, To-Be, Combined. The Combined view is exactly To-Be minus As-Is. ---
+  const asIsSeniorCost = asIsExecuted * workingDaysPerYear * hourlyRate;
+  const asIsBacklogCost = asIsBacklog * workingDaysPerYear * hourlyRate;
+  const toBeSeniorCost = asIsSeniorCost - realizedHardSavings; // after the share of freed time that becomes real savings
+  const toBeTotalCost = toBeSeniorCost + calculatedSoftwareCost;
+  const costChange = toBeTotalCost - asIsSeniorCost; // positive = costs more to operate
+  const asIsLoad = capacityHours > 0 ? (asIsHumanDemand / capacityHours) * 100 : 0;
+  const toBeLoad = capacityHours > 0 ? (toBeTotalHumanDemand / capacityHours) * 100 : 0;
+  const asIsAiShare = rawReviewDemandHours > 0 ? (asIsNetAiHandled / rawReviewDemandHours) * 100 : 0;
+  const toBeAiShare = rawReviewDemandHours > 0 ? (toBeNetAiHandled / rawReviewDemandHours) * 100 : 0;
+  const backlogRemoved = Math.max(0, asIsBacklog - toBeBacklog);
+  const backlogRemovedPct = asIsBacklog > 0 ? (backlogRemoved / asIsBacklog) * 100 : null;
+  const strategicNetValue = strategicBenefit - calculatedSoftwareCost;
+  const paybackText = paybackMonths === null ? 'N/A' : (paybackMonths >= 36 ? `${(paybackMonths / 12).toFixed(1)} yrs` : `${paybackMonths.toFixed(1)} mo`);
+  const loadTone = (v) => (v > 100 ? 'text-red-400' : 'text-emerald-400');
+
+  const asIsPanel = {
+    title: 'As-Is', subtitle: 'What you live with today', accent: 'border-t-slate-400', pdfColor: [71, 85, 105],
+    hero: { label: 'Yearly senior review cost', value: fmtMoney(asIsSeniorCost), note: 'What the review time your seniors actually spend costs you.' },
+    rows: [
+      { label: 'Review demand vs. capacity', value: fmtPct(asIsLoad), tone: loadTone(asIsLoad) },
+      { label: 'Backlog per day', value: `${asIsBacklog.toFixed(1)} h`, tone: asIsBacklog > 0 ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Cost to review the backlog by hand (yearly)', value: fmtMoney(asIsBacklogCost), tone: asIsBacklog > 0 ? 'text-amber-400' : 'text-white' },
+      { label: 'Senior review hours per day', value: `${asIsExecuted.toFixed(1)} h` },
+      { label: 'Reviews handled by AI', value: fmtPct(asIsAiShare) },
+    ],
+  };
+  const toBePanel = {
+    title: 'To-Be', subtitle: 'Where you want to get', accent: 'border-t-violet-500', pdfColor: [124, 58, 237],
+    hero: { label: 'Total yearly operating cost', value: fmtMoney(toBeTotalCost), note: 'Senior review time plus the software.' },
+    rows: [
+      { label: 'Senior review cost (after expected savings)', value: fmtMoney(toBeSeniorCost) },
+      { label: 'Software cost', value: fmtMoney(calculatedSoftwareCost) },
+      { label: 'Review demand vs. capacity', value: fmtPct(toBeLoad), tone: loadTone(toBeLoad) },
+      { label: 'Backlog per day', value: `${toBeBacklog.toFixed(1)} h`, tone: toBeBacklog > 0 ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Senior review hours per day', value: `${toBeExecuted.toFixed(1)} h` },
+      { label: 'Reviews handled by AI', value: fmtPct(toBeAiShare) },
+    ],
+  };
+  const combinedPanel = {
+    title: 'Combined', subtitle: 'What the strategy delivers', accent: 'border-t-[#f52e01]', pdfColor: [245, 46, 1],
+    hero: {
+      label: 'Net change in yearly cost', value: costChange === 0 ? '$0' : signedMoney(costChange),
+      tone: costChange > 0 ? 'text-red-400' : 'text-emerald-400',
+      note: costChange > 0 ? 'Costs more to run than today.' : (costChange < 0 ? 'Costs less to run than today.' : 'No change in yearly cost.'),
+    },
+    rows: [
+      { label: 'Backlog removed per day', value: `${backlogRemoved.toFixed(1)} h${backlogRemovedPct !== null ? ` (${Math.round(backlogRemovedPct)}%)` : ''}`, tone: backlogRemoved > 0 ? 'text-emerald-400' : 'text-white' },
+      { label: `Avoided review cost (${avoidedCostConfidence}% confidence, non-cash)`, value: `+${fmtMoney(confidenceAdjustedAvoidedCost)}`, tone: 'text-amber-400' },
+      { label: 'Net value incl. avoided cost', value: signedMoney(strategicNetValue), tone: strategicNetValue < 0 ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Conservative ROI', value: fmtPct(roiPercentage), tone: isNegativeRoi ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Strategic ROI', value: fmtPct(strategicRoi), tone: isNegativeStrategic ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Payback (hard savings only)', value: paybackText, tone: paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400' },
+    ],
+  };
 
   // --- CHART DATA (one bar per scenario; segments in SEGMENTS order) ---
   const r1 = (x) => Number(x.toFixed(1));
@@ -391,21 +498,14 @@ export default function App() {
         headStyles: { fillColor: [15, 23, 42] },
       });
 
-      const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
-      const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} Months` : 'N/A';
-      autoTable(doc, {
-        startY: doc.lastAutoTable.finalY + 8,
-        head: [['Financial Indicator (per year)', 'Calculated Value']],
-        body: [
-          ['Realized Hard Capacity Savings', money(realizedHardSavings)],
-          ['Avoided Manual Review Cost (non-cash, 100%)', money(annualTechDebtValue)],
-          ['Avoided Cost after confidence discount', money(confidenceAdjustedAvoidedCost)],
-          ['Annual Software Cost', money(calculatedSoftwareCost)],
-          ['Conservative ROI (Hard Savings Only)', roiStr],
-          ['Strategic ROI (Hard + Avoided Cost)', strategicRoi !== null ? `${strategicRoi.toFixed(0)}%` : 'N/A'],
-          ['Payback Period (Hard Savings)', paybackStr],
-        ],
-        headStyles: { fillColor: [245, 46, 1] },
+      [asIsPanel, toBePanel, combinedPanel].forEach((panel) => {
+        autoTable(doc, {
+          startY: doc.lastAutoTable.finalY + 8,
+          head: [[`${panel.title}: ${panel.subtitle}`, '']],
+          body: [[panel.hero.label, panel.hero.value], ...panel.rows.map((r) => [r.label, r.value])],
+          headStyles: { fillColor: panel.pdfColor },
+          columnStyles: { 1: { halign: 'right' } },
+        });
       });
 
       if (exportOpts.chart) {
@@ -561,17 +661,15 @@ export default function App() {
                 <Users className="w-5 h-5 text-slate-500" /> Current Operations (As-Is)
               </h2>
               <div className="space-y-6">
-                <ControlSlider label="Active Developers" value={devs} min={1} max={500} setter={setDevs} />
-                <ControlSlider label="LOC per Dev / Day" value={locPerDev} min={100} max={15000} step={100} setter={setLocPerDev} />
+                <ControlSlider label="Active Developers" value={devs} min={1} max={500} setter={setDevs} tooltip="Developers whose code gets reviewed." />
+                <ControlSlider label="LOC per Dev / Day" value={locPerDev} min={100} max={15000} step={100} setter={setLocPerDev} tooltip="Lines of code each developer writes or changes per day." />
                 
                 <div className="pt-4 border-t border-slate-100 space-y-6">
-                  <ControlSlider label="Senior Engineers" value={seniors} min={1} max={100} setter={setSeniors} />
+                  <ControlSlider label="Senior Engineers" value={seniors} min={1} max={100} setter={setSeniors} tooltip="Engineers who spend time reviewing other people's code." />
                   <ControlSlider 
-                    label="Review Hrs / Senior / Day" value={dailyReviewHoursPerSenior} min={0.5} max={8} step={0.5} setter={setDailyReviewHoursPerSenior} suffix="h"
-                    tooltip="Max daily hours a senior can dedicate to manual code review."
-                  />
-                  <ControlSlider label="Mins to audit 500 LOC" value={minsPer500} min={5} max={120} step={5} setter={setMinsPer500} suffix="m" />
-                  <ControlSlider label="Senior Hourly Rate" value={hourlyRate} min={30} max={500} step={5} setter={setHourlyRate} prefix="$" />
+                    label="Review Hrs / Senior / Day" value={dailyReviewHoursPerSenior} min={0.5} max={8} step={0.5} setter={setDailyReviewHoursPerSenior} suffix="h" tooltip="Hours per day each senior can give to reviews, not their whole workday." />
+                  <ControlSlider label="Mins to audit 500 LOC" value={minsPer500} min={5} max={120} step={5} setter={setMinsPer500} suffix="m" tooltip="Time a senior needs to properly review 500 lines." />
+                  <ControlSlider label="Senior Hourly Rate" value={hourlyRate} min={30} max={500} step={5} setter={setHourlyRate} prefix="$" tooltip="Full hourly cost of a senior engineer." />
                 </div>
               </div>
             </div>
@@ -584,24 +682,17 @@ export default function App() {
               <div className="space-y-6">
                 <ControlSlider 
                   label="Target AI Automation" value={targetAutomation} min={automation} max={100} setter={setTargetAutomation} suffix="%"
-                  highlightClass="text-[#f52e01] bg-orange-50 border-orange-200 focus:ring-orange-500" accentClass="accent-[#f52e01]"
-                />
+                  highlightClass="text-[#f52e01] bg-orange-50 border-orange-200 focus:ring-orange-500" accentClass="accent-[#f52e01]" tooltip="Share of review work the AI would take over." />
                 
                 <ControlSlider 
                   label="Human-in-the-Loop Override" value={humanInTheLoop} min={0} max={100} step={1} setter={setHumanInTheLoop} suffix="%"
-                  highlightClass="text-amber-700 bg-amber-50 border-amber-200" accentClass="accent-amber-500"
-                  tooltip="Percentage of AI-reviewed code that fails or requires human manual correction."
-                />
+                  highlightClass="text-amber-700 bg-amber-50 border-amber-200" accentClass="accent-amber-500" tooltip="Share of the AI's reviews that a person still has to redo or fix." />
 
                 <ControlSlider 
-                  label="Confidence in Avoided Cost" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%"
-                  tooltip="How much of the avoided manual-review cost a CFO would accept as real value. It is a counterfactual, not cash. Be conservative."
-                />
+                  label="Confidence in Avoided Cost" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%" tooltip="How much of the avoided cost you'd defend in front of a CFO." />
 
                 <ControlSlider 
-                  label="Savings Realization Rate" value={savingsRealizationRate} min={0} max={100} step={5} setter={setSavingsRealizationRate} suffix="%"
-                  tooltip="Percentage of freed human capacity converted into liquid cash savings."
-                />
+                  label="Savings Realization Rate" value={savingsRealizationRate} min={0} max={100} step={5} setter={setSavingsRealizationRate} suffix="%" tooltip="How much of the freed time turns into real money saved." />
 
                 {/* PRICING MODEL SELECTOR */}
                 <div className="pt-2 border-t border-slate-200">
@@ -612,10 +703,10 @@ export default function App() {
                   </div>
                   
                   {pricingModel === 'saas' ? (
-                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" />
+                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" tooltip="What the AI tool costs per year." />
                   ) : (
                     <div className="space-y-4">
-                      <ControlSlider label="Inference Cost (per 1k LOC)" value={costPer1kLoc} min={0.01} max={5.00} step={0.01} setter={setCostPer1kLoc} prefix="$" />
+                      <ControlSlider label="Inference Cost (per 1k LOC)" value={costPer1kLoc} min={0.01} max={5.00} step={0.01} setter={setCostPer1kLoc} prefix="$" tooltip="What the AI charges per 1,000 lines it reviews." />
                       <div className="bg-slate-100 p-3 rounded-lg border border-slate-200 flex justify-between items-center shadow-inner">
                         <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1"><Rocket className="w-3 h-3" /> Annual API Cost</span>
                         <span className="text-lg font-black text-slate-700">${tokenAnnualCost.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
@@ -673,44 +764,17 @@ export default function App() {
               ))}
             </div>
 
-            {/* PREMIUM METRICS (PAYWALL) */}
-            <div className="relative overflow-hidden bg-[#0B1120] rounded-2xl shadow-lg border border-[#1E2D4A]">
-              <div className={`p-6 lg:p-8 transition-all duration-500 ${!isUnlocked ? 'blur-md opacity-40' : ''}`}>
-                <div className="text-white text-sm font-bold uppercase tracking-widest mb-1 flex items-center gap-2">
-                  <PieChart className="w-4 h-4 text-[#f52e01]" /> Financial Splits (CFO Ready)
-                </div>
-                <p className="text-slate-400 text-xs mb-6">All figures are per year. Savings and costs are kept separate so you can show exactly what is real cash and what is not.</p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                  <Kpi label="Hard Capacity Savings" value={`+${fmtMoney(realizedHardSavings)}`} accent="border-b-blue-500"
-                    note="Real money saved when AI genuinely frees senior time. Close to zero if your team stays overloaded." />
-                  <Kpi label="Avoided Review Cost" value={`+${fmtMoney(confidenceAdjustedAvoidedCost)}`} accent="border-b-amber-500" valueClass="text-amber-400"
-                    note={`What clearing today's backlog by hand would cost, weighted by your ${avoidedCostConfidence}% confidence. Not cash.`} />
-                  <Kpi label="Annual Software Cost" value={fmtMoney(calculatedSoftwareCost)} accent="border-b-slate-400"
-                    note={pricingModel === 'saas' ? 'The yearly license you entered.' : 'Estimated API spend, based on the share of code the AI reviews.'} />
-                  <Kpi label="Conservative ROI" value={fmtPct(roiPercentage)} accent={isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
-                    valueClass={isNegativeRoi ? 'text-red-400' : 'text-emerald-400'} badge={isNegativeRoi ? 'Negative' : null}
-                    note="Return counting only real savings. The number a CFO will trust." />
-                  <Kpi label="Strategic ROI" value={fmtPct(strategicRoi)} accent={isNegativeStrategic ? 'border-b-red-500' : 'border-b-emerald-500'}
-                    valueClass={isNegativeStrategic ? 'text-red-400' : 'text-emerald-400'}
-                    note="Return that also counts avoided cost. Shows the fuller picture, but expect questions." />
-                  <Kpi label="Payback Period" value={paybackMonths === null ? 'N/A' : (paybackMonths >= 36 ? `${(paybackMonths / 12).toFixed(1)} yrs` : `${paybackMonths.toFixed(1)} mo`)}
-                    accent={paybackMonths === null || isNegativeRoi ? 'border-b-red-500' : 'border-b-emerald-500'}
-                    valueClass={paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400'}
-                    note="Time for hard savings alone to cover the software cost." />
-                </div>
+            {/* FINANCIAL SPLITS: AS-IS / TO-BE / COMBINED */}
+            <div className="bg-[#0B1120] rounded-2xl shadow-lg border border-[#1E2D4A] p-5 lg:p-6">
+              <div className="text-white text-sm font-bold uppercase tracking-widest mb-1 flex items-center gap-2">
+                <PieChart className="w-4 h-4 text-[#f52e01]" /> Financial Splits (CFO Ready)
               </div>
-
-              {!isUnlocked && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0B1120]/70 z-10 p-6 text-center backdrop-blur-sm">
-                  <Lock className="w-12 h-12 text-[#f52e01] mb-4 drop-shadow-lg" />
-                  <h4 className="text-2xl font-extrabold text-white mb-2">Unlock True CFO Metrics</h4>
-                  <p className="text-slate-300 text-sm mb-6 max-w-md">Split ROI into "Hard Savings" vs "Avoided Cost" to build a bulletproof business case.</p>
-                  <button onClick={() => setShowModal(true)} className="bg-[#f52e01] hover:bg-[#ff4117] text-white font-bold py-3 px-8 rounded-xl shadow-xl flex items-center gap-2">
-                    Unlock Pro Analytics <ChevronRight className="w-5 h-5" />
-                  </button>
-                </div>
-              )}
+              <p className="text-slate-400 text-xs mb-5">All money figures are per year. Read left to right: where you are, where you want to be, and what the change adds up to.</p>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <SplitPanel {...asIsPanel} locked={!isUnlocked && !AS_IS_FREE} onUnlock={() => setShowModal(true)} />
+                <SplitPanel {...toBePanel} locked={!isUnlocked} onUnlock={() => setShowModal(true)} />
+                <SplitPanel {...combinedPanel} locked={!isUnlocked} onUnlock={() => setShowModal(true)} />
+              </div>
             </div>
 
             {/* AI EXECUTIVE PITCH SECTION */}
@@ -833,6 +897,7 @@ export default function App() {
                 <p><strong className="text-slate-800">Hard savings.</strong> Real money, and only when your seniors truly end up spending less time on reviews. If they are overloaded both before and after AI, they stay just as busy, so there is little cash to save. You also choose how much of any freed time you expect to turn into real savings.</p>
                 <p><strong className="text-slate-800">Avoided cost.</strong> The backlog AI clears is work you would otherwise have to pay people to do. It is a useful comparison, but it is not cash, so you decide how much of it you are confident to count.</p>
                 <p><strong className="text-slate-800">Two ROI numbers, on purpose.</strong> The conservative one counts only real savings and is the one a finance team will trust. The strategic one also counts avoided cost and shows the fuller picture. Showing both keeps the case honest.</p>
+                <p><strong className="text-slate-800">Why a higher hourly rate can improve the result.</strong> The software costs the same whatever your seniors earn, but every hour AI frees or every backlog hour it clears is worth more. The As-Is panel shows how much more your current setup costs when salaries rise.</p>
                 <p><strong className="text-slate-800">A common situation.</strong> A busy team with a large backlog adopts AI. The backlog shrinks a lot, but the seniors stay just as busy. The conservative ROI looks weak and the strategic ROI looks strong. Neither is wrong: the value is in risk and speed, not in cutting payroll.</p>
                 <p className="text-xs text-slate-500">These are estimates to support a decision, based on the numbers you enter. They are not guarantees.</p>
               </div>
