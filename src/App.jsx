@@ -115,6 +115,26 @@ function HelpTip({ text }) {
   );
 }
 
+// An optional assumption: the user can leave it out of the case. Off means the value is 0 (no effect).
+function OptionalControl({ label, value, onChange, restoreTo, children }) {
+  const last = useRef(value > 0 ? value : restoreTo);
+  const [off, setOff] = useState(value === 0);
+  useEffect(() => { if (value > 0) { last.current = value; setOff(false); } }, [value]);
+  const toggle = () => {
+    if (off) { setOff(false); onChange(last.current > 0 ? last.current : restoreTo); }
+    else { setOff(true); onChange(0); }
+  };
+  return (
+    <div>
+      <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-800">
+        <input type="checkbox" checked={!off} onChange={toggle} className="accent-[#f52e01] w-4 h-4" />
+        Include {label}
+      </label>
+      {off ? <p className="mt-1 ml-6 text-sm text-slate-600">Not included. The result is calculated without it.</p> : <div className="mt-3">{children}</div>}
+    </div>
+  );
+}
+
 function CollapsibleSection({ title, icon, locked, onUnlock, children }) {
   return (
     <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-5 lg:p-6">
@@ -746,6 +766,7 @@ export default function App() {
   // Starting points the user has not edited: defaults and the example cases. Anything else counts as their own work.
   const isKnownState = () => [DEFAULT_INPUTS, ...PRESETS.map((pr) => ({ ...DEFAULT_INPUTS, ...pr.inputs }))]
     .some((base) => Object.keys(DEFAULT_INPUTS).every((k) => inputs[k] === base[k]));
+  const activePresetId = (PRESETS.find((pr) => { const base = { ...DEFAULT_INPUTS, ...pr.inputs }; return Object.keys(DEFAULT_INPUTS).every((k) => inputs[k] === base[k]); }) || {}).id || null;
   const resetOutputs = () => {
     setAiSummaries({ pitch: "", email: "" });
     setAiError("");
@@ -1192,14 +1213,18 @@ export default function App() {
                 </button>
               </div>
               <div className="grid grid-cols-3 gap-2">
-                {PRESETS.map((pr) => (
-                  <button key={pr.id} onClick={() => loadExample(pr)} className="rounded-lg border border-slate-200 px-2 py-2 text-left hover:bg-slate-50 hover:border-slate-300">
-                    <div className="text-sm font-bold text-slate-900 leading-tight">{pr.name}</div>
-                    <div className="text-xs text-slate-600 leading-tight">{pr.note}</div>
-                  </button>
-                ))}
+                {PRESETS.map((pr) => {
+                  const active = activePresetId === pr.id;
+                  return (
+                    <button key={pr.id} onClick={() => loadExample(pr)} aria-pressed={active}
+                      className={`rounded-lg border-2 px-2 py-2 text-left transition-colors ${active ? 'border-[#f52e01] bg-orange-50' : 'border-slate-200 hover:bg-slate-50 hover:border-slate-300'}`}>
+                      <div className={`text-sm font-bold leading-tight flex items-center justify-between gap-1 ${active ? 'text-[#f52e01]' : 'text-slate-900'}`}>{pr.name}{active && <span aria-hidden="true">✓</span>}</div>
+                      <div className="text-xs text-slate-600 leading-tight">{pr.note}</div>
+                    </button>
+                  );
+                })}
               </div>
-              <p className="text-xs text-slate-600 mt-2 leading-snug">Illustrative cases to see how the tool works. Replace them with your own numbers.</p>
+              <p className="text-xs text-slate-600 mt-2 leading-snug">{activePresetId ? 'Example loaded. Change any value and it becomes your own case.' : 'Illustrative cases to see how the tool works. Replace them with your own numbers.'}</p>
             </div>
 
             {/* CURRENT SCENARIO */}
@@ -1263,11 +1288,15 @@ export default function App() {
                 </div>
                 <details className="group rounded-xl border border-slate-200 bg-white">
                   <summary className="cursor-pointer list-none px-4 py-3 text-sm font-bold text-slate-700 flex items-center justify-between gap-3">
-                    <span>Advanced assumptions<span className="block text-xs font-normal text-slate-600 mt-0.5">Follow-up {humanInTheLoop}% · confidence {avoidedCostConfidence}% · realization {savingsRealizationRate}% · setup {fmtMoney(implementationCost)} · ramp {rampMonths} mo · discount {discountRate}%</span></span>
+                    <span>Advanced assumptions<span className="block text-xs font-normal text-slate-600 mt-0.5">Follow-up {humanInTheLoop}% · confidence {avoidedCostConfidence}% · realization {savingsRealizationRate}% · setup {implementationCost > 0 ? fmtMoney(implementationCost) : 'off'} · ramp {rampMonths > 0 ? `${rampMonths} mo` : 'off'} · growth {volumeGrowth > 0 || salaryGrowth > 0 ? 'on' : 'off'} · discount {discountRate > 0 ? `${discountRate}%` : 'off'}</span></span>
                     <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 transition-transform group-open:rotate-90" />
                   </summary>
                   <div className="px-4 pb-4 pt-4 space-y-6 border-t border-slate-100">
-                
+                <div>
+                  <div className="text-xs font-bold text-slate-600 uppercase tracking-wider">Core assumptions</div>
+                  <p className="text-sm text-slate-600 mt-1">These always count in the result, because the model cannot run without them. They start from example values, so replace them with yours.</p>
+                </div>
+
                 <ControlSlider 
                   label="Human-in-the-Loop Override" value={humanInTheLoop} min={0} max={100} step={1} setter={setHumanInTheLoop} suffix="%"
                   highlightClass="text-amber-700 bg-amber-50 border-amber-200" accentClass="accent-amber-500" tooltip="Share of the AI's reviews that a person still has to redo or fix." />
@@ -1293,15 +1322,31 @@ export default function App() {
                 <ControlSlider 
                   label="Savings Realization Rate" value={savingsRealizationRate} min={0} max={100} step={5} setter={setSavingsRealizationRate} suffix="%" tooltip="How much of the freed time turns into real money saved." />
 
-                <ControlSlider label="Setup Cost (one-time)" value={implementationCost} min={0} max={1000000} step={1000} setter={setImplementationCost} prefix="$"
-                  highlightClass="text-emerald-700 bg-white border-emerald-200 focus:ring-emerald-500" accentClass="accent-emerald-600"
-                  tooltip="One-time cost of integration, setup and training." />
-                <ControlSlider label="Adoption Ramp" value={rampMonths} min={0} max={24} step={1} setter={setRampMonths} suffix=" mo"
-                  highlightClass="text-indigo-700 bg-white border-indigo-200 focus:ring-indigo-500" accentClass="accent-indigo-600"
-                  tooltip="Months until the AI delivers its full effect." />
-                <ControlSlider label="Code Volume Growth / Year" value={volumeGrowth} min={0} max={50} step={1} setter={setVolumeGrowth} suffix="%" tooltip="How much more code your team expects to write each year. Review capacity stays fixed." />
-                <ControlSlider label="Hourly Rate Growth / Year" value={salaryGrowth} min={0} max={15} step={1} setter={setSalaryGrowth} suffix="%" tooltip="Expected yearly raise in the cost of a senior hour." />
-                <ControlSlider label="Discount Rate" value={discountRate} min={0} max={30} step={1} setter={setDiscountRate} suffix="%" tooltip="Used for present value. It reflects that money received later is worth less." />
+                <div className="pt-5 border-t border-slate-200 space-y-5">
+                  <div>
+                    <div className="text-xs font-bold text-slate-600 uppercase tracking-wider">Optional extras</div>
+                    <p className="text-sm text-slate-600 mt-1">Untick any of these to leave it out. The calculation then runs without it.</p>
+                  </div>
+                  <OptionalControl label="one-time setup cost" value={implementationCost} onChange={setImplementationCost} restoreTo={DEFAULT_INPUTS.implementationCost}>
+                    <ControlSlider label="Setup Cost (one-time)" value={implementationCost} min={0} max={1000000} step={1000} setter={setImplementationCost} prefix="$"
+                      highlightClass="text-emerald-700 bg-white border-emerald-200 focus:ring-emerald-500" accentClass="accent-emerald-600"
+                      tooltip="One-time cost of integration, setup and training." />
+                  </OptionalControl>
+                  <OptionalControl label="adoption ramp" value={rampMonths} onChange={setRampMonths} restoreTo={DEFAULT_INPUTS.rampMonths}>
+                    <ControlSlider label="Adoption Ramp" value={rampMonths} min={0} max={24} step={1} setter={setRampMonths} suffix=" mo"
+                      highlightClass="text-indigo-700 bg-white border-indigo-200 focus:ring-indigo-500" accentClass="accent-indigo-600"
+                      tooltip="Months until the AI delivers its full effect." />
+                  </OptionalControl>
+                  <OptionalControl label="code volume growth" value={volumeGrowth} onChange={setVolumeGrowth} restoreTo={10}>
+                    <ControlSlider label="Code Volume Growth / Year" value={volumeGrowth} min={0} max={50} step={1} setter={setVolumeGrowth} suffix="%" tooltip="How much more code your team expects to write each year. Review capacity stays fixed." />
+                  </OptionalControl>
+                  <OptionalControl label="hourly rate growth" value={salaryGrowth} onChange={setSalaryGrowth} restoreTo={3}>
+                    <ControlSlider label="Hourly Rate Growth / Year" value={salaryGrowth} min={0} max={15} step={1} setter={setSalaryGrowth} suffix="%" tooltip="Expected yearly raise in the cost of a senior hour." />
+                  </OptionalControl>
+                  <OptionalControl label="discounting (present value)" value={discountRate} onChange={setDiscountRate} restoreTo={DEFAULT_INPUTS.discountRate}>
+                    <ControlSlider label="Discount Rate" value={discountRate} min={0} max={30} step={1} setter={setDiscountRate} suffix="%" tooltip="Used for present value. It reflects that money received later is worth less." />
+                  </OptionalControl>
+                </div>
 
                   </div>
                 </details>
