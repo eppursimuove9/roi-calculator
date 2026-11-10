@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, LineChart, Line, ReferenceLine, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { AlertTriangle, TrendingUp, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, RefreshCw, Target, Rocket, PieChart, BookOpen } from 'lucide-react';
+import { AlertTriangle, TrendingUp, Users, Lock, Download, ChevronRight, Info, Sparkles, Loader2, Mail, FileText, RefreshCw, Target, Rocket, PieChart, BookOpen, RotateCcw } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -57,6 +57,8 @@ function ControlSlider({
 
 // Set to false to lock the As-Is panel behind the subscription too.
 const AS_IS_FREE = true;
+// Show the 3-year net value (first headline card) without the email. Set to false to lock it again.
+const FREE_NET3 = true;
 
 const fmtMoney = (n) => {
   if (n === null || n === undefined || !isFinite(n)) return 'N/A';
@@ -113,24 +115,46 @@ function HelpTip({ text }) {
   );
 }
 
+function CollapsibleSection({ title, icon, locked, onUnlock, children }) {
+  return (
+    <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-5 lg:p-6">
+      <summary
+        className="cursor-pointer font-bold text-slate-900 flex items-center gap-2 list-none"
+        onClick={(e) => { if (locked) { e.preventDefault(); onUnlock(); } }}
+      >
+        {icon} {title}
+        {locked ? (
+          <span className="ml-auto flex items-center gap-1 text-sm font-bold text-[#f52e01]"><Lock className="w-4 h-4" /> Unlock</span>
+        ) : (
+          <>
+            <span className="ml-auto text-sm font-semibold text-slate-600 group-open:hidden">Show</span>
+            <span className="ml-auto text-sm font-semibold text-slate-600 hidden group-open:inline">Hide</span>
+          </>
+        )}
+      </summary>
+      {!locked && <div className="mt-4">{children}</div>}
+    </details>
+  );
+}
+
 function SplitPanel({ title, subtitle, accent, hero, rows, footnote = null, locked = false, onUnlock }) {
   return (
     <div className={`relative min-w-0 rounded-xl border border-[#1E2D4A] border-t-4 ${accent} bg-[#111A2E] overflow-hidden`}>
       <div className={`p-4 ${locked ? 'blur-md opacity-40 select-none' : ''}`} aria-hidden={locked}>
         <div className="text-white font-bold text-sm leading-tight">{title}</div>
-        <div className="text-slate-400 text-xs mb-3">{subtitle}</div>
+        <div className="text-slate-300 text-[13px] mb-3">{subtitle}</div>
         <div className="mb-2 pb-3 border-b border-[#1E2D4A]">
-          <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wide leading-tight">{hero.label}</div>
+          <div className="text-slate-300 text-xs font-bold uppercase tracking-wide leading-tight">{hero.label}</div>
           <div className={`text-2xl font-black tabular-nums leading-tight break-words ${hero.tone || 'text-white'}`}>{hero.value}</div>
-          {hero.note && <div className="text-[11px] text-slate-400 leading-snug mt-1">{hero.note}</div>}
+          {hero.note && <div className="text-[13px] text-slate-300 leading-snug mt-1">{hero.note}</div>}
         </div>
         {rows.map((r) => (
           <div key={r.label} className="flex items-start justify-between gap-3 py-2 border-b border-[#1E2D4A] last:border-0">
-            <span className="text-xs text-slate-400 leading-snug min-w-0">{r.label}</span>
+            <span className="text-[13px] text-slate-300 leading-snug min-w-0">{r.label}</span>
             <span className={`text-sm font-bold tabular-nums text-right shrink-0 max-w-[55%] break-words ${r.tone || 'text-white'}`}>{r.value}</span>
           </div>
         ))}
-        {footnote && <div className="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/30 p-2 text-[11px] text-amber-200 leading-snug">{footnote}</div>}
+        {footnote && <div className="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/30 p-2 text-xs text-amber-200 leading-snug">{footnote}</div>}
       </div>
       {locked && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center p-4 bg-[#0B1120]/70 backdrop-blur-sm">
@@ -449,28 +473,94 @@ function buildWorkbook(XLSX, { inputs, m, scenarioResults, tornado, tornadoLabel
 
 const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+const DEFAULT_INPUTS = {
+  devs: 12,
+  locPerDev: 1500,
+  automation: 0,
+  seniors: 3,
+  dailyReviewHoursPerSenior: 3,
+  minsPer500: 75,
+  hourlyRate: 90,
+  targetAutomation: 75,
+  humanInTheLoop: 25,
+  savingsRealizationRate: 50,
+  softwareCost: 7000,
+  pricingModel: 'saas',
+  costPer1kLoc: 0.15,
+  avoidedCostConfidence: 50,
+  implementationCost: 10000,
+  rampMonths: 3,
+  currentToolCost: 0,
+  avoidedBasis: 'effort',
+  defectsPer1kLoc: 0.1,
+  costPerDefect: 2000,
+  discountRate: 10,
+  volumeGrowth: 0,
+  salaryGrowth: 0,
+  workingDays: 230,
+};
+
+function buildVerdict({ asIsLoad, asIsBacklog, toBeBacklog, backlogRemoved, backlogRemovedPct, realizedHardSavings, hardSavingsDailyHours, costChange, toBeLoad, ty }) {
+  const load = Math.round(asIsLoad);
+  let state;
+  if (asIsLoad > 100) state = `Your senior engineers are asked to review ${load}% of what they can cover, so about ${asIsBacklog.toFixed(1)} hours of code a day go unreviewed.`;
+  else if (asIsLoad >= 85) state = `Your seniors are close to their limit (${load}% of their review capacity), but they keep up.`;
+  else state = `Your seniors have room to spare: review demand is ${load}% of their capacity, so nothing piles up.`;
+
+  let outcome;
+  if (asIsBacklog > 0) {
+    if (backlogRemoved <= 0.05) {
+      outcome = 'With the AI plan as set, the backlog barely changes.';
+    } else {
+      const cleared = toBeBacklog <= 0 ? 'The AI plan clears the whole backlog' : `The AI plan clears ${Math.round(backlogRemovedPct || 0)}% of that backlog (${backlogRemoved.toFixed(1)} hours a day)`;
+      if (realizedHardSavings > 0) outcome = `${cleared} and frees senior time worth about ${fmtMoney(realizedHardSavings)} a year.`;
+      else if (toBeLoad > 100) outcome = `${cleared}, but your seniors stay at their limit, so there is no cash saving. The value is in risk and speed, not payroll.`;
+      else outcome = `${cleared}, but it frees little senior time, so cash savings are close to zero.`;
+    }
+  } else if (realizedHardSavings > 0) {
+    outcome = `The AI plan would free about ${hardSavingsDailyHours.toFixed(1)} hours of senior time a day, worth about ${fmtMoney(realizedHardSavings)} a year at your realization rate.`;
+  } else {
+    outcome = 'The AI plan would change little: your seniors already keep up and almost no time is freed.';
+  }
+
+  const cost = costChange > 0.5 ? `Running it costs about ${fmtMoney(costChange)} a year more than today.`
+    : (costChange < -0.5 ? `Running it costs about ${fmtMoney(-costChange)} a year less than today.` : 'Running it costs about the same as today.');
+  let pay, tone;
+  if (ty.paybackHardMonth) { pay = `Real savings repay the investment by month ${ty.paybackHardMonth}.`; tone = 'good'; }
+  else if (ty.strategicNet > 0) { pay = `Real savings alone do not repay it within 3 years. Counting avoided cost, which is not cash, the 3-year net is ${signedMoney(ty.strategicNet)}.`; tone = 'mixed'; }
+  else { pay = 'Even counting avoided cost, it does not repay within 3 years.'; tone = 'bad'; }
+  return { state, outcome, money: `${cost} ${pay}`, tone };
+}
+
+// Example cases to start from. Illustrative only, not benchmarks.
+const PRESETS = [
+  { id: 'startup', name: 'Startup', note: '10 devs', inputs: { devs: 10, locPerDev: 300, automation: 0, seniors: 2, dailyReviewHoursPerSenior: 2, hourlyRate: 90, targetAutomation: 60, softwareCost: 3600, implementationCost: 3000, rampMonths: 1 } },
+  { id: 'mid', name: 'Mid-size', note: '60 devs', inputs: { devs: 60, locPerDev: 300, automation: 0, seniors: 8, dailyReviewHoursPerSenior: 3, hourlyRate: 100, targetAutomation: 70, softwareCost: 21600, implementationCost: 15000, rampMonths: 3 } },
+  { id: 'large', name: 'Large team', note: '300 devs', inputs: { devs: 300, locPerDev: 200, automation: 20, seniors: 25, dailyReviewHoursPerSenior: 2.5, hourlyRate: 110, targetAutomation: 80, softwareCost: 150000, implementationCost: 60000, rampMonths: 4, currentToolCost: 40000 } },
+];
+
 export default function App() {
   // --- STATE AND VARIABLES (Current Inputs) ---
-  const [devs, setDevs] = useState(12);
-  const [locPerDev, setLocPerDev] = useState(1500);
-  const [automation, setAutomation] = useState(0);
-  const [seniors, setSeniors] = useState(3);
-  const [dailyReviewHoursPerSenior, setDailyReviewHoursPerSenior] = useState(3);
-  const [minsPer500, setMinsPer500] = useState(75);
-  const [hourlyRate, setHourlyRate] = useState(90);
+  const [devs, setDevs] = useState(DEFAULT_INPUTS.devs);
+  const [locPerDev, setLocPerDev] = useState(DEFAULT_INPUTS.locPerDev);
+  const [automation, setAutomation] = useState(DEFAULT_INPUTS.automation);
+  const [seniors, setSeniors] = useState(DEFAULT_INPUTS.seniors);
+  const [dailyReviewHoursPerSenior, setDailyReviewHoursPerSenior] = useState(DEFAULT_INPUTS.dailyReviewHoursPerSenior);
+  const [minsPer500, setMinsPer500] = useState(DEFAULT_INPUTS.minsPer500);
+  const [hourlyRate, setHourlyRate] = useState(DEFAULT_INPUTS.hourlyRate);
   
   // --- STATE AND VARIABLES (Target/AI Scenario) ---
-  const [targetAutomation, setTargetAutomation] = useState(75);
-  const [humanInTheLoop, setHumanInTheLoop] = useState(25); // % of AI reviews needing human override
-  const [savingsRealizationRate, setSavingsRealizationRate] = useState(50);
+  const [targetAutomation, setTargetAutomation] = useState(DEFAULT_INPUTS.targetAutomation);
+  const [humanInTheLoop, setHumanInTheLoop] = useState(DEFAULT_INPUTS.humanInTheLoop); // % of AI reviews needing human override
+  const [savingsRealizationRate, setSavingsRealizationRate] = useState(DEFAULT_INPUTS.savingsRealizationRate);
   
   // Financials
-  const [softwareCost, setSoftwareCost] = useState(7000);
-  const [pricingModel, setPricingModel] = useState('saas'); // saas | tokens
-  const [costPer1kLoc, setCostPer1kLoc] = useState(0.15);
+  const [softwareCost, setSoftwareCost] = useState(DEFAULT_INPUTS.softwareCost);
+  const [pricingModel, setPricingModel] = useState(DEFAULT_INPUTS.pricingModel); // saas | tokens
+  const [costPer1kLoc, setCostPer1kLoc] = useState(DEFAULT_INPUTS.costPer1kLoc);
 
   // --- PAYWALL STATE (Lead Capture) ---
-  const [avoidedCostConfidence, setAvoidedCostConfidence] = useState(50); // % of the avoided manual-review cost the user is confident to count
+  const [avoidedCostConfidence, setAvoidedCostConfidence] = useState(DEFAULT_INPUTS.avoidedCostConfidence); // % of the avoided manual-review cost the user is confident to count
   const [leadEmail, setLeadEmail] = useState("");
   const [leadError, setLeadError] = useState("");
   const [leadSubmitting, setLeadSubmitting] = useState(false);
@@ -489,16 +579,16 @@ export default function App() {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [exportOpts, setExportOpts] = useState({ chart: true, pitch: false, email: false });
   const [showGuide, setShowGuide] = useState(true);
-  const [implementationCost, setImplementationCost] = useState(10000); // one-time setup, planning assumption
-  const [rampMonths, setRampMonths] = useState(3); // months to reach full effect, planning assumption
-  const [currentToolCost, setCurrentToolCost] = useState(0); // what the team already pays for AI review tools
-  const [avoidedBasis, setAvoidedBasis] = useState('effort'); // 'effort' | 'defects'
-  const [defectsPer1kLoc, setDefectsPer1kLoc] = useState(0.1); // planning assumption (no public benchmark), used only with the defects basis
-  const [costPerDefect, setCostPerDefect] = useState(2000); // planning assumption (no public benchmark), used only with the defects basis
-  const [discountRate, setDiscountRate] = useState(10); // planning assumption for present value
-  const [volumeGrowth, setVolumeGrowth] = useState(0); // yearly growth in code volume
-  const [salaryGrowth, setSalaryGrowth] = useState(0); // yearly growth in the hourly rate
-  const [workingDays, setWorkingDays] = useState(230);
+  const [implementationCost, setImplementationCost] = useState(DEFAULT_INPUTS.implementationCost); // one-time setup, planning assumption
+  const [rampMonths, setRampMonths] = useState(DEFAULT_INPUTS.rampMonths); // months to reach full effect, planning assumption
+  const [currentToolCost, setCurrentToolCost] = useState(DEFAULT_INPUTS.currentToolCost); // what the team already pays for AI review tools
+  const [avoidedBasis, setAvoidedBasis] = useState(DEFAULT_INPUTS.avoidedBasis); // 'effort' | 'defects'
+  const [defectsPer1kLoc, setDefectsPer1kLoc] = useState(DEFAULT_INPUTS.defectsPer1kLoc); // planning assumption (no public benchmark), used only with the defects basis
+  const [costPerDefect, setCostPerDefect] = useState(DEFAULT_INPUTS.costPerDefect); // planning assumption (no public benchmark), used only with the defects basis
+  const [discountRate, setDiscountRate] = useState(DEFAULT_INPUTS.discountRate); // planning assumption for present value
+  const [volumeGrowth, setVolumeGrowth] = useState(DEFAULT_INPUTS.volumeGrowth); // yearly growth in code volume
+  const [salaryGrowth, setSalaryGrowth] = useState(DEFAULT_INPUTS.salaryGrowth); // yearly growth in the hourly rate
+  const [workingDays, setWorkingDays] = useState(DEFAULT_INPUTS.workingDays);
   const [sensMetric, setSensMetric] = useState('threeYearHardNet');
   const [isGeneratingXlsx, setIsGeneratingXlsx] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -590,6 +680,8 @@ export default function App() {
       : (isNegativeRoi ? 'Hard savings alone do not cover the software cost. Read this together with the avoided cost.' : null),
   };
 
+  const verdict = buildVerdict({ asIsLoad, asIsBacklog, toBeBacklog, backlogRemoved, backlogRemovedPct, realizedHardSavings, hardSavingsDailyHours, costChange, toBeLoad, ty });
+
   // Headline results: lead with these, then the percentages
   const breakEven = ty.breakEven;
   const headline = [
@@ -650,6 +742,39 @@ export default function App() {
       discountRate: setDiscountRate, volumeGrowth: setVolumeGrowth, salaryGrowth: setSalaryGrowth, workingDays: setWorkingDays };
     Object.entries(v).forEach(([k, val]) => setters[k](val));
   };
+
+  // Starting points the user has not edited: defaults and the example cases. Anything else counts as their own work.
+  const isKnownState = () => [DEFAULT_INPUTS, ...PRESETS.map((pr) => ({ ...DEFAULT_INPUTS, ...pr.inputs }))]
+    .some((base) => Object.keys(DEFAULT_INPUTS).every((k) => inputs[k] === base[k]));
+  const resetOutputs = () => {
+    setAiSummaries({ pitch: "", email: "" });
+    setAiError("");
+    setExportOpts({ chart: true, pitch: false, email: false });
+    setScenarioName("");
+    try { window.history.replaceState({}, '', window.location.pathname); } catch { /* ignore */ }
+  };
+  // Starts a fresh simulation: back to the starting values. Saved scenarios are kept.
+  const startNewSimulation = () => {
+    if (!isKnownState() && !window.confirm('Start a new simulation? Your current inputs will be reset to the starting values. Saved scenarios are kept.')) return;
+    applyInputs(DEFAULT_INPUTS);
+    resetOutputs();
+  };
+  const loadExample = (pr) => {
+    if (!isKnownState() && !window.confirm('Load this example? Your current inputs will be replaced. Saved scenarios are kept.')) return;
+    applyInputs({ ...DEFAULT_INPUTS, ...pr.inputs });
+    resetOutputs();
+  };
+
+  const resultsRef = useRef(null);
+  const [resultsInView, setResultsInView] = useState(false);
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver(([e]) => setResultsInView(e.isIntersecting), { threshold: 0.05 });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  const jumpToResults = () => { try { resultsRef.current && resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch { /* ignore */ } };
 
   useEffect(() => {
     try {
@@ -826,8 +951,13 @@ export default function App() {
       doc.text(`Generated on: ${timestamp}`, 14, 30);
       doc.text("Confidential ROI Analysis Report - The Predictive Engine", 14, 35);
 
+      doc.setFontSize(10); doc.setTextColor(30);
+      const vLines = doc.splitTextToSize(stripMd(`In plain words: ${verdict.state} ${verdict.outcome} ${verdict.money}`), 182);
+      doc.text(vLines, 14, 44);
+      const verdictEndY = 44 + vLines.length * 5 + 4;
+
       autoTable(doc, {
-        startY: 45,
+        startY: verdictEndY,
         head: [['Assumption', 'Value']],
         body: [
           ['Active developers', `${devs}`],
@@ -1054,6 +1184,24 @@ export default function App() {
               <strong>Starting values are examples.</strong> Replace them with your own team's numbers.
             </div>
 
+            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-600">Start from an example</div>
+                <button onClick={startNewSimulation} className="flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900">
+                  <RotateCcw className="w-3.5 h-3.5" /> New simulation
+                </button>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {PRESETS.map((pr) => (
+                  <button key={pr.id} onClick={() => loadExample(pr)} className="rounded-lg border border-slate-200 px-2 py-2 text-left hover:bg-slate-50 hover:border-slate-300">
+                    <div className="text-sm font-bold text-slate-900 leading-tight">{pr.name}</div>
+                    <div className="text-xs text-slate-600 leading-tight">{pr.note}</div>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-600 mt-2 leading-snug">Illustrative cases to see how the tool works. Replace them with your own numbers.</p>
+            </div>
+
             {/* CURRENT SCENARIO */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-bold flex items-center gap-2 border-b pb-4 mb-6 text-slate-800">
@@ -1068,11 +1216,19 @@ export default function App() {
                   <ControlSlider label="Senior Engineers" value={seniors} min={1} max={100} setter={setSeniors} tooltip="Engineers who review other people's code. Their review hours set your capacity." />
                   <ControlSlider 
                     label="Review Hrs / Senior / Day" value={dailyReviewHoursPerSenior} min={0.5} max={8} step={0.5} setter={setDailyReviewHoursPerSenior} suffix="h" tooltip="Hours per day each senior can give to reviews, not their whole workday." />
-                  <ControlSlider label="Mins to audit 500 LOC" value={minsPer500} min={5} max={120} step={5} setter={setMinsPer500} suffix="m" tooltip="Time a senior needs to properly review 500 lines." />
                   <ControlSlider label="Senior Hourly Rate" value={hourlyRate} min={30} max={500} step={5} setter={setHourlyRate} prefix="$" tooltip="Full hourly cost of a senior engineer." />
+                </div>
+              <details className="group mt-6 rounded-xl border border-slate-200 bg-slate-50">
+                <summary className="cursor-pointer list-none px-4 py-3 text-sm font-bold text-slate-700 flex items-center justify-between gap-3">
+                  <span>Advanced<span className="block text-xs font-normal text-slate-600 mt-0.5">{minsPer500} min per 500 LOC · {workingDays} days a year · current AI tool {fmtMoney(currentToolCost)}</span></span>
+                  <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="px-4 pb-4 pt-4 space-y-6 border-t border-slate-200">
+                  <ControlSlider label="Mins to audit 500 LOC" value={minsPer500} min={5} max={120} step={5} setter={setMinsPer500} suffix="m" tooltip="Time a senior needs to properly review 500 lines." />
                   <ControlSlider label="Working Days / Year" value={workingDays} min={150} max={260} step={5} setter={setWorkingDays} tooltip="Productive days per year used to turn daily results into yearly ones." />
                   <ControlSlider label="Current AI Tool Cost" value={currentToolCost} min={0} max={1000000} step={1000} setter={setCurrentToolCost} prefix="$" tooltip="What you already pay yearly for AI review tools. Assumed to continue in both scenarios." />
                 </div>
+              </details>
               </div>
             </div>
 
@@ -1085,6 +1241,32 @@ export default function App() {
                 <ControlSlider 
                   label="Target AI Automation" value={targetAutomation} min={automation} max={100} setter={setTargetAutomation} suffix="%"
                   highlightClass="text-[#f52e01] bg-orange-50 border-orange-200 focus:ring-orange-500" accentClass="accent-[#f52e01]" tooltip="Share of review work the AI would take over." />
+                {/* PRICING MODEL SELECTOR */}
+                <div className="pt-2 border-t border-slate-200">
+                  <div className="text-xs font-bold text-slate-600 uppercase tracking-wider mt-4 mb-2">Software Cost Model</div>
+                  <div className="flex gap-2 bg-slate-200 p-1 rounded-lg mb-4">
+                    <button onClick={() => setPricingModel('saas')} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${pricingModel === 'saas' ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-600 hover:text-slate-700'}`}>SaaS License</button>
+                    <button onClick={() => setPricingModel('tokens')} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${pricingModel === 'tokens' ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-600 hover:text-slate-700'}`}>API Tokens</button>
+                  </div>
+                  
+                  {pricingModel === 'saas' ? (
+                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" tooltip="Yearly cost of the new tool, on top of what you pay today." />
+                  ) : (
+                    <div className="space-y-4">
+                      <ControlSlider label="Inference Cost (per 1k LOC)" value={costPer1kLoc} min={0.01} max={5.00} step={0.01} setter={setCostPer1kLoc} prefix="$" tooltip="What the AI charges per 1,000 lines it reviews." />
+                      <div className="bg-slate-100 p-3 rounded-lg border border-slate-200 flex justify-between items-center shadow-inner">
+                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1"><Rocket className="w-3 h-3" /> Added API Cost (yearly)</span>
+                        <span className="text-lg font-black text-slate-700">${tokenAnnualCost.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <details className="group rounded-xl border border-slate-200 bg-white">
+                  <summary className="cursor-pointer list-none px-4 py-3 text-sm font-bold text-slate-700 flex items-center justify-between gap-3">
+                    <span>Advanced assumptions<span className="block text-xs font-normal text-slate-600 mt-0.5">Follow-up {humanInTheLoop}% · confidence {avoidedCostConfidence}% · realization {savingsRealizationRate}% · setup {fmtMoney(implementationCost)} · ramp {rampMonths} mo · discount {discountRate}%</span></span>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0 transition-transform group-open:rotate-90" />
+                  </summary>
+                  <div className="px-4 pb-4 pt-4 space-y-6 border-t border-slate-100">
                 
                 <ControlSlider 
                   label="Human-in-the-Loop Override" value={humanInTheLoop} min={0} max={100} step={1} setter={setHumanInTheLoop} suffix="%"
@@ -1094,10 +1276,10 @@ export default function App() {
                   label="Confidence in Avoided Cost" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%" tooltip="How much of the avoided cost you'd defend in front of a CFO." />
 
                 <div>
-                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">How to value the backlog AI clears <HelpTip text="Review effort prices those hours at your hourly rate. Defects avoided prices the bugs that would otherwise slip through." /></div>
+                  <div className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2 flex items-center gap-1">How to value the backlog AI clears <HelpTip text="Review effort prices those hours at your hourly rate. Defects avoided prices the bugs that would otherwise slip through." /></div>
                   <div className="flex gap-2 bg-slate-200 p-1 rounded-lg">
                     {[['effort', 'Review effort'], ['defects', 'Defects avoided']].map(([k, l]) => (
-                      <button key={k} onClick={() => setAvoidedBasis(k)} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${avoidedBasis === k ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-500 hover:text-slate-800'}`}>{l}</button>
+                      <button key={k} onClick={() => setAvoidedBasis(k)} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${avoidedBasis === k ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-600 hover:text-slate-800'}`}>{l}</button>
                     ))}
                   </div>
                 </div>
@@ -1121,33 +1303,15 @@ export default function App() {
                 <ControlSlider label="Hourly Rate Growth / Year" value={salaryGrowth} min={0} max={15} step={1} setter={setSalaryGrowth} suffix="%" tooltip="Expected yearly raise in the cost of a senior hour." />
                 <ControlSlider label="Discount Rate" value={discountRate} min={0} max={30} step={1} setter={setDiscountRate} suffix="%" tooltip="Used for present value. It reflects that money received later is worth less." />
 
-                {/* PRICING MODEL SELECTOR */}
-                <div className="pt-2 border-t border-slate-200">
-                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mt-4 mb-2">Software Cost Model</div>
-                  <div className="flex gap-2 bg-slate-200 p-1 rounded-lg mb-4">
-                    <button onClick={() => setPricingModel('saas')} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${pricingModel === 'saas' ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-500 hover:text-slate-700'}`}>SaaS License</button>
-                    <button onClick={() => setPricingModel('tokens')} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${pricingModel === 'tokens' ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-500 hover:text-slate-700'}`}>API Tokens</button>
                   </div>
-                  
-                  {pricingModel === 'saas' ? (
-                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" tooltip="Yearly cost of the new tool, on top of what you pay today." />
-                  ) : (
-                    <div className="space-y-4">
-                      <ControlSlider label="Inference Cost (per 1k LOC)" value={costPer1kLoc} min={0.01} max={5.00} step={0.01} setter={setCostPer1kLoc} prefix="$" tooltip="What the AI charges per 1,000 lines it reviews." />
-                      <div className="bg-slate-100 p-3 rounded-lg border border-slate-200 flex justify-between items-center shadow-inner">
-                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1"><Rocket className="w-3 h-3" /> Added API Cost (yearly)</span>
-                        <span className="text-lg font-black text-slate-700">${tokenAnnualCost.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                </details>
               </div>
             </div>
 
           </div>
 
           {/* RIGHT COLUMN: Results */}
-          <div className="xl:col-span-8 space-y-6 min-w-0">
+          <div ref={resultsRef} className="xl:col-span-8 space-y-6 min-w-0 scroll-mt-4">
 
             {/* QUICK GUIDE (free, helps first-time visitors) */}
             {showGuide && (
@@ -1157,12 +1321,12 @@ export default function App() {
                     <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><BookOpen className="w-5 h-5 text-[#f52e01]" /> New here? Three steps</h2>
                     <p className="text-sm text-slate-600 mt-1">This tool estimates what slow code review costs your team, and what AI review could change.</p>
                   </div>
-                  <button onClick={() => setShowGuide(false)} className="text-xs font-bold text-slate-500 hover:text-slate-800 shrink-0">Hide</button>
+                  <button onClick={() => setShowGuide(false)} className="text-xs font-bold text-slate-600 hover:text-slate-800 shrink-0">Hide</button>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-slate-600">
                   <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
                     <div className="font-bold text-slate-900 mb-1">Describe your team</div>
-                    Fill in <em>Current Operations</em>: how many developers you have, how much code they write, and how many hours your senior engineers can spend on reviews.
+                    Fill in <em>Current Operations</em>: how many developers you have, how much code they write, and how many hours your senior engineers can spend on reviews. Or start from an example case.
                   </div>
                   <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
                     <div className="font-bold text-slate-900 mb-1">Pick an AI scenario</div>
@@ -1176,6 +1340,20 @@ export default function App() {
               </div>
             )}
 
+            {/* PLAIN-LANGUAGE VERDICT */}
+            <div className={`bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-l-4 ${!isUnlocked ? 'border-l-slate-400' : (verdict.tone === 'good' ? 'border-l-emerald-500' : (verdict.tone === 'mixed' ? 'border-l-amber-500' : 'border-l-red-500'))}`}>
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">In plain words</div>
+              <p className="text-slate-900 text-base leading-relaxed">{verdict.state}</p>
+              {isUnlocked ? (
+                <p className="text-slate-700 text-base leading-relaxed mt-2">{verdict.outcome} {verdict.money}</p>
+              ) : (
+                <p className="text-slate-600 text-sm mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Lock className="w-4 h-4 shrink-0" /> Subscribe to see what the AI plan changes and whether it pays back.
+                  <button onClick={() => setShowModal(true)} className="font-bold text-[#f52e01] hover:underline">Unlock</button>
+                </p>
+              )}
+            </div>
+
             {/* OPERATING METRICS */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {[
@@ -1184,9 +1362,9 @@ export default function App() {
                 { label: 'Daily Backlog Today', value: asIsBacklog.toFixed(1), note: "Hours of code per day that nobody has time to review. This is today's risk.", bar: 'border-b-[#f52e01]' },
               ].map((m) => (
                 <div key={m.label} className={`min-w-0 bg-white p-5 rounded-2xl shadow-sm border border-slate-200 border-b-4 ${m.bar}`}>
-                  <div className="text-slate-500 text-xs font-bold uppercase tracking-wide mb-2 leading-tight">{m.label}</div>
-                  <div className="text-3xl font-black text-slate-900 tabular-nums">{m.value} <span className="text-lg text-slate-400">h</span></div>
-                  <div className="text-sm text-slate-500 mt-1 leading-snug">{m.note}</div>
+                  <div className="text-slate-600 text-xs font-bold uppercase tracking-wide mb-2 leading-tight">{m.label}</div>
+                  <div className="text-3xl font-black text-slate-900 tabular-nums">{m.value} <span className="text-lg text-slate-500">h</span></div>
+                  <div className="text-sm text-slate-600 mt-1 leading-snug">{m.note}</div>
                 </div>
               ))}
             </div>
@@ -1196,15 +1374,25 @@ export default function App() {
               <div className="text-white text-sm font-bold uppercase tracking-widest mb-1 flex items-center gap-2">
                 <PieChart className="w-4 h-4 text-[#f52e01]" /> Financial Splits (CFO Ready)
               </div>
-              <p className="text-slate-400 text-xs mb-5">All money figures are per year at full adoption. Read left to right: where you are, where you want to be, and what the change adds up to.</p>
-              <div className={`grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4 ${!isUnlocked ? 'blur-md opacity-40 select-none' : ''}`} aria-hidden={!isUnlocked}>
-                {headline.map((h) => (
-                  <div key={h.label} className="min-w-0 rounded-xl border border-[#1E2D4A] bg-[#111A2E] p-4">
-                    <div className="text-slate-400 text-[11px] font-bold uppercase tracking-wide leading-tight">{h.label}</div>
-                    <div className={`text-2xl font-black tabular-nums leading-tight break-words mt-1 ${h.tone}`}>{h.value}</div>
-                    <div className="text-[11px] text-slate-400 leading-snug mt-1">{h.note}</div>
-                  </div>
-                ))}
+              <p className="text-slate-300 text-sm mb-5">All money figures are per year at full adoption. Read left to right: where you are, where you want to be, and what the change adds up to.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                {headline.map((h, i) => {
+                  const hidden = !isUnlocked && !(i === 0 && FREE_NET3);
+                  return (
+                    <div key={h.label} className="relative min-w-0 rounded-xl border border-[#1E2D4A] bg-[#111A2E] overflow-hidden">
+                      <div className={`p-4 ${hidden ? 'blur-md opacity-40 select-none' : ''}`} aria-hidden={hidden}>
+                        <div className="text-slate-300 text-xs font-bold uppercase tracking-wide leading-tight">{h.label}</div>
+                        <div className={`text-2xl font-black tabular-nums leading-tight break-words mt-1 ${h.tone}`}>{h.value}</div>
+                        <div className="text-[13px] text-slate-300 leading-snug mt-1">{h.note}</div>
+                      </div>
+                      {hidden && (
+                        <button onClick={() => setShowModal(true)} className="absolute inset-0 z-10 flex items-center justify-center gap-2 text-white text-sm font-bold">
+                          <Lock className="w-5 h-5 text-[#f52e01]" /> Unlock
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <SplitPanel {...asIsPanel} locked={!isUnlocked && !AS_IS_FREE} onUnlock={() => setShowModal(true)} />
@@ -1213,45 +1401,12 @@ export default function App() {
               </div>
             </div>
 
-            {/* AI EXECUTIVE PITCH SECTION */}
-            {isUnlocked && (
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                <div className="flex justify-between items-center mb-4 border-b pb-4">
-                   <h3 className="font-bold flex items-center gap-2 text-slate-900"><Sparkles className="w-5 h-5 text-amber-500" /> AI Executive Assistant</h3>
-                   <div className="flex gap-2">
-                      <button onClick={() => setActiveAiTab('pitch')} className={`text-xs font-bold py-2 px-4 rounded-md transition-colors ${activeAiTab === 'pitch' ? 'bg-slate-200 text-slate-900' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileText className="w-4 h-4 inline mr-1"/> Pitch</button>
-                      <button onClick={() => setActiveAiTab('email')} className={`text-xs font-bold py-2 px-4 rounded-md transition-colors ${activeAiTab === 'email' ? 'bg-slate-200 text-slate-900' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><Mail className="w-4 h-4 inline mr-1"/> Email</button>
-                   </div>
-                </div>
-                <div className="min-h-[160px] p-6 bg-slate-50 rounded-xl border border-slate-100">
-                   {aiLoading ? (
-                     <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-3 py-6">
-                       <Sparkles className="w-8 h-8 animate-pulse text-amber-400" />
-                       <p className="text-sm font-medium">Synthesizing executive model...</p>
-                     </div>
-                   ) : aiError ? (
-                     <div className="text-red-500 text-sm flex items-center gap-2"><AlertTriangle className="w-5 h-5" /> {aiError}</div>
-                   ) : aiSummaries[activeAiTab] ? (
-                     <div>
-                       <div dangerouslySetInnerHTML={{__html: formatAIResponse(aiSummaries[activeAiTab])}} className="prose prose-sm max-w-none text-slate-800"></div>
-                       <button onClick={() => executeAIGeneration(activeAiTab)} className="mt-4 text-xs font-bold text-slate-500 hover:text-slate-900 flex items-center gap-1 ml-auto"><RefreshCw className="w-3 h-3"/> Regenerate</button>
-                     </div>
-                   ) : (
-                     <div className="flex flex-col items-center justify-center py-4 space-y-4">
-                        <p className="text-slate-400 text-sm italic">Generate a CFO-ready business case outlining hard savings vs avoided cost.</p>
-                        <button onClick={() => executeAIGeneration(activeAiTab)} className="bg-[#0B1120] hover:bg-slate-800 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><Sparkles className="w-4 h-4"/> Generate Draft</button>
-                     </div>
-                   )}
-                </div>
-              </div>
-            )}
-
             {/* CAPACITY VS DEMAND CHART */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-slate-700" /> Where the review work goes, every day
               </h3>
-              <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">
+              <p className="text-sm text-slate-600 mt-1 mb-4 max-w-3xl">
                 Each bar is one day of code review. The dashed line is the most your seniors can review. Red past the line is code nobody gets to review; violet is work the AI takes off your seniors' plate.
               </p>
 
@@ -1289,72 +1444,17 @@ export default function App() {
               </div>
             </div>
 
-            {/* SCENARIOS + SENSITIVITY */}
-            <LockedSection locked={!isUnlocked} onUnlock={() => setShowModal(true)}>
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Target className="w-5 h-5 text-slate-700" /> Scenarios and sensitivity</h3>
-                <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">These are illustrative cases, not forecasts. They keep your automation target and the facts about your team fixed, and change how well things go. Pessimistic: human follow-up +10 points, savings realization -25, confidence -25, costs +25%, ramp +3 months. Optimistic: -5, +20, +20, costs -15%, ramp -1 month.</p>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
-                        <th className="py-2 pr-3 font-bold">Result</th>
-                        {SCENARIOS.map((sc) => <th key={sc.key} className={`py-2 px-3 font-bold text-right ${sc.key === 'base' ? 'text-[#f52e01]' : ''}`}>{sc.label}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {scenarioRows.map((r) => (
-                        <tr key={r.label} className="border-t border-slate-100">
-                          <td className="py-2 pr-3 text-slate-600">{r.label}</td>
-                          {r.values.map((v, i) => <td key={i} className={`py-2 px-3 text-right font-bold tabular-nums ${i === 1 ? 'bg-orange-50 text-slate-900' : 'text-slate-700'}`}>{v}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="mt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h4 className="font-bold text-slate-900">What moves the result the most</h4>
-                    <p className="text-sm text-slate-500">Each bar shows how the 3-year result changes when that input moves by a fixed, illustrative margin (for example 25% on costs). The margins are not benchmarks. Check the longest bars first.</p>
-                  </div>
-                  <div className="flex gap-1 bg-slate-100 p-1 rounded-lg shrink-0">
-                    {[['threeYearHardNet', 'Hard savings only'], ['threeYearStrategicNet', 'Incl. avoided cost']].map(([k, l]) => (
-                      <button key={k} onClick={() => setSensMetric(k)} className={`text-xs font-bold px-3 py-1.5 rounded-md ${sensMetric === k ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{l}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="mt-3 w-full" style={{ height: Math.max(180, tornado.length * 36 + 60) }}>
-                  {tornado.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-sm text-slate-500">No input changes this result. Raise the AI automation level to see drivers.</div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={tornado} layout="vertical" stackOffset="sign" margin={{ top: 8, right: 24, left: 8, bottom: 8 }} barCategoryGap="25%">
-                        <CartesianGrid horizontal={false} stroke="#e2e8f0" strokeDasharray="3 3" />
-                        <XAxis type="number" tickFormatter={(v) => fmtMoney(v)} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
-                        <YAxis type="category" dataKey="label" width={150} axisLine={false} tickLine={false} tick={{ fill: '#0B1120', fontWeight: 600, fontSize: 12 }} />
-                        <RechartsTooltip formatter={(v, n) => [signedMoney(v), n === 'down' ? 'If worse' : 'If better']} cursor={{ fill: 'rgba(15,23,42,0.04)' }} />
-                        <ReferenceLine x={0} stroke="#0B1120" strokeWidth={1.5} />
-                        <Bar dataKey="down" stackId="t" fill="#ef4444" radius={4} />
-                        <Bar dataKey="up" stackId="t" fill="#10b981" radius={4} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-              </div>
-            </LockedSection>
-
             {/* THREE-YEAR VIEW */}
             <LockedSection locked={!isUnlocked} onUnlock={() => setShowModal(true)}>
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                 <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2"><TrendingUp className="w-5 h-5 text-slate-700" /> Three-year view</h3>
-                <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">Adds the one-time setup cost and a gradual adoption ramp. The lines show cumulative net value; above zero means the investment has paid for itself.</p>
+                <p className="text-sm text-slate-600 mt-1 mb-4 max-w-3xl">Adds the one-time setup cost and a gradual adoption ramp. The lines show cumulative net value; above zero means the investment has paid for itself.</p>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={ty.series} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
                       <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="month" ticks={[0, 6, 12, 18, 24, 30, 36]} tickFormatter={(v) => `M${v}`} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
-                      <YAxis tickFormatter={(v) => fmtMoney(v)} axisLine={false} tickLine={false} width={70} tick={{ fill: '#64748b', fontSize: 11 }} />
+                      <XAxis dataKey="month" ticks={[0, 6, 12, 18, 24, 30, 36]} tickFormatter={(v) => `M${v}`} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                      <YAxis tickFormatter={(v) => fmtMoney(v)} axisLine={false} tickLine={false} width={70} tick={{ fill: '#64748b', fontSize: 12 }} />
                       <RechartsTooltip labelFormatter={(v) => `Month ${v}`} formatter={(v, n) => [signedMoney(v), n === 'cumHard' ? 'Hard savings only' : 'Incl. avoided cost']} />
                       <ReferenceLine y={0} stroke="#0B1120" strokeWidth={1.5} />
                       <Line type="monotone" dataKey="cumHard" stroke="#3b82f6" strokeWidth={3} dot={false} />
@@ -1370,7 +1470,7 @@ export default function App() {
                 <div className="mt-4 overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-xs uppercase tracking-wide text-slate-500">
+                      <tr className="text-xs uppercase tracking-wide text-slate-600">
                         <th className="py-2 pr-3 text-left font-bold">Per year</th>
                         {['Year 1', 'Year 2', 'Year 3', '3-year total'].map((h) => <th key={h} className="py-2 px-3 text-right font-bold">{h}</th>)}
                       </tr>
@@ -1388,39 +1488,43 @@ export default function App() {
               </div>
             </LockedSection>
 
-            {/* BENCHMARKS */}
-            <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-              <summary className="cursor-pointer font-bold text-slate-900 flex items-center gap-2 list-none">
-                <BookOpen className="w-5 h-5 text-slate-500" /> Benchmarks and sources
-                <span className="ml-auto text-xs font-semibold text-slate-500 group-open:hidden">Show</span>
-                <span className="ml-auto text-xs font-semibold text-slate-500 hidden group-open:inline">Hide</span>
-              </summary>
-              <p className="mt-4 text-sm text-slate-600">We compared your inputs with public references where they exist. These are reference ranges from public sources, mostly US or global vendor data, not a standard. A value outside them is not wrong, but be ready to explain it.</p>
-              <div className="mt-4 space-y-4">
-                {BENCHMARKS.map((b) => {
-                  const v = b.value(inputs);
-                  const status = v === null || b.noStatus ? null : (v < b.range[0] ? 'Below reference range' : (v > b.range[1] ? 'Above reference range' : 'Within reference range'));
-                  return (
-                    <div key={b.label} className="border-t border-slate-100 pt-4 text-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <strong className="text-slate-900">{b.label}</strong>
-                        {status && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${status.startsWith('Within') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{status}</span>}
-                      </div>
-                      <div className="text-slate-600 mt-1">Your value: <strong>{v === null ? 'n/a for this pricing model' : `${Math.round(v * 100) / 100} ${b.unit}`}</strong>. Reference range: {b.range[0]} to {b.range[1]} {b.unit}.</div>
-                      <div className="text-slate-500 mt-1">{b.note} Source: <a href={b.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-800">{b.source}</a></div>
-                    </div>
-                  );
-                })}
-                <div className="border-t border-slate-100 pt-4 text-sm text-slate-500">
-                  <strong className="text-slate-900">Planning assumptions.</strong> We found no reliable public benchmark for lines of code per developer per day, review hours per senior, realization rate, confidence in avoided cost, setup cost, adoption ramp, defect rate and cost per defect, growth rates or the discount rate. Replace them with your own data. They are the inputs most likely to be questioned.
+            {/* AI EXECUTIVE PITCH SECTION */}
+            {isUnlocked && (
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div className="flex justify-between items-center mb-4 border-b pb-4">
+                   <h3 className="font-bold flex items-center gap-2 text-slate-900"><Sparkles className="w-5 h-5 text-amber-500" /> AI Executive Assistant</h3>
+                   <div className="flex gap-2">
+                      <button onClick={() => setActiveAiTab('pitch')} className={`text-xs font-bold py-2 px-4 rounded-md transition-colors ${activeAiTab === 'pitch' ? 'bg-slate-200 text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><FileText className="w-4 h-4 inline mr-1"/> Pitch</button>
+                      <button onClick={() => setActiveAiTab('email')} className={`text-xs font-bold py-2 px-4 rounded-md transition-colors ${activeAiTab === 'email' ? 'bg-slate-200 text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><Mail className="w-4 h-4 inline mr-1"/> Email</button>
+                   </div>
+                </div>
+                <div className="min-h-[160px] p-6 bg-slate-50 rounded-xl border border-slate-100">
+                   {aiLoading ? (
+                     <div className="flex flex-col items-center justify-center h-full text-slate-600 space-y-3 py-6">
+                       <Sparkles className="w-8 h-8 animate-pulse text-amber-400" />
+                       <p className="text-sm font-medium">Synthesizing executive model...</p>
+                     </div>
+                   ) : aiError ? (
+                     <div className="text-red-500 text-sm flex items-center gap-2"><AlertTriangle className="w-5 h-5" /> {aiError}</div>
+                   ) : aiSummaries[activeAiTab] ? (
+                     <div>
+                       <div dangerouslySetInnerHTML={{__html: formatAIResponse(aiSummaries[activeAiTab])}} className="prose prose-sm max-w-none text-slate-800"></div>
+                       <button onClick={() => executeAIGeneration(activeAiTab)} className="mt-4 text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 ml-auto"><RefreshCw className="w-3 h-3"/> Regenerate</button>
+                     </div>
+                   ) : (
+                     <div className="flex flex-col items-center justify-center py-4 space-y-4">
+                        <p className="text-slate-600 text-sm italic">Generate a CFO-ready business case outlining hard savings vs avoided cost.</p>
+                        <button onClick={() => executeAIGeneration(activeAiTab)} className="bg-[#0B1120] hover:bg-slate-800 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><Sparkles className="w-4 h-4"/> Generate Draft</button>
+                     </div>
+                   )}
                 </div>
               </div>
-            </details>
+            )}
 
             {/* EXPORT & SHARE PANEL */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Download className="w-5 h-5 text-slate-700" /> Export and share</h3>
-              <p className="text-sm text-slate-500 mt-1">Your inputs stay in your browser. Nothing is stored on our servers.</p>
+              <p className="text-sm text-slate-600 mt-1">Your inputs stay in your browser. Nothing is stored on our servers.</p>
               <div className="mt-4 flex flex-wrap gap-3">
                 <button onClick={() => isUnlocked ? handleDownloadPDF() : setShowModal(true)} disabled={isGeneratingPdf}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-bold border ${isUnlocked ? 'bg-[#0B1120] text-white border-[#0B1120] hover:bg-slate-800' : 'bg-orange-50 text-[#f52e01] border-orange-200 hover:bg-orange-100'}`}>
@@ -1442,11 +1546,11 @@ export default function App() {
                 </label>
                 <label className={`flex items-center gap-2 ${aiSummaries.pitch ? 'cursor-pointer' : 'opacity-50'}`}>
                   <input type="checkbox" disabled={!aiSummaries.pitch} checked={exportOpts.pitch && !!aiSummaries.pitch} onChange={(e) => setExportOpts(o => ({ ...o, pitch: e.target.checked }))} className="accent-[#f52e01]" />
-                  PDF: include Board Pitch {!aiSummaries.pitch && <span className="text-xs text-slate-500">(generate it above first)</span>}
+                  PDF: include Board Pitch {!aiSummaries.pitch && <span className="text-xs text-slate-600">(generate it above first)</span>}
                 </label>
                 <label className={`flex items-center gap-2 ${aiSummaries.email ? 'cursor-pointer' : 'opacity-50'}`}>
                   <input type="checkbox" disabled={!aiSummaries.email} checked={exportOpts.email && !!aiSummaries.email} onChange={(e) => setExportOpts(o => ({ ...o, email: e.target.checked }))} className="accent-[#f52e01]" />
-                  PDF: include CFO Email {!aiSummaries.email && <span className="text-xs text-slate-500">(generate it above first)</span>}
+                  PDF: include CFO Email {!aiSummaries.email && <span className="text-xs text-slate-600">(generate it above first)</span>}
                 </label>
               </div>
 
@@ -1461,7 +1565,7 @@ export default function App() {
                   <ul className="mt-3 divide-y divide-slate-100 text-sm">
                     {savedScenarios.map((sc) => (
                       <li key={sc.id} className="py-2 flex items-center justify-between gap-3">
-                        <span className="min-w-0 truncate text-slate-700">{sc.name} <span className="text-xs text-slate-400">{new Date(sc.savedAt).toLocaleDateString()}</span></span>
+                        <span className="min-w-0 truncate text-slate-700">{sc.name} <span className="text-xs text-slate-600">{new Date(sc.savedAt).toLocaleDateString()}</span></span>
                         <span className="flex gap-3 shrink-0">
                           <button onClick={() => loadScenario(sc)} className="font-bold text-[#f52e01] hover:underline">Load</button>
                           <button onClick={() => deleteScenario(sc.id)} className="text-slate-500 hover:text-red-600">Delete</button>
@@ -1473,12 +1577,90 @@ export default function App() {
               </div>
             </div>
 
+            {/* SCENARIOS + SENSITIVITY */}
+            <CollapsibleSection title="Scenarios and sensitivity" icon={<Target className="w-5 h-5 text-slate-700" />} locked={!isUnlocked} onUnlock={() => setShowModal(true)}>
+              <div>
+                <p className="text-sm text-slate-600 mb-4 max-w-3xl">These are illustrative cases, not forecasts. They keep your automation target and the facts about your team fixed, and change how well things go. Pessimistic: human follow-up +10 points, savings realization -25, confidence -25, costs +25%, ramp +3 months. Optimistic: -5, +20, +20, costs -15%, ramp -1 month.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase tracking-wide text-slate-600">
+                        <th className="py-2 pr-3 font-bold">Result</th>
+                        {SCENARIOS.map((sc) => <th key={sc.key} className={`py-2 px-3 font-bold text-right ${sc.key === 'base' ? 'text-[#f52e01]' : ''}`}>{sc.label}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {scenarioRows.map((r) => (
+                        <tr key={r.label} className="border-t border-slate-100">
+                          <td className="py-2 pr-3 text-slate-600">{r.label}</td>
+                          {r.values.map((v, i) => <td key={i} className={`py-2 px-3 text-right font-bold tabular-nums ${i === 1 ? 'bg-orange-50 text-slate-900' : 'text-slate-700'}`}>{v}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-slate-900">What moves the result the most</h4>
+                    <p className="text-sm text-slate-600">Each bar shows how the 3-year result changes when that input moves by a fixed, illustrative margin (for example 25% on costs). The margins are not benchmarks. Check the longest bars first.</p>
+                  </div>
+                  <div className="flex gap-1 bg-slate-100 p-1 rounded-lg shrink-0">
+                    {[['threeYearHardNet', 'Hard savings only'], ['threeYearStrategicNet', 'Incl. avoided cost']].map(([k, l]) => (
+                      <button key={k} onClick={() => setSensMetric(k)} className={`text-xs font-bold px-3 py-1.5 rounded-md ${sensMetric === k ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-3 w-full" style={{ height: Math.max(180, tornado.length * 36 + 60) }}>
+                  {tornado.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-sm text-slate-600">No input changes this result. Raise the AI automation level to see drivers.</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={tornado} layout="vertical" stackOffset="sign" margin={{ top: 8, right: 24, left: 8, bottom: 8 }} barCategoryGap="25%">
+                        <CartesianGrid horizontal={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                        <XAxis type="number" tickFormatter={(v) => fmtMoney(v)} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                        <YAxis type="category" dataKey="label" width={150} axisLine={false} tickLine={false} tick={{ fill: '#0B1120', fontWeight: 600, fontSize: 12 }} />
+                        <RechartsTooltip formatter={(v, n) => [signedMoney(v), n === 'down' ? 'If worse' : 'If better']} cursor={{ fill: 'rgba(15,23,42,0.04)' }} />
+                        <ReferenceLine x={0} stroke="#0B1120" strokeWidth={1.5} />
+                        <Bar dataKey="down" stackId="t" fill="#ef4444" radius={4} />
+                        <Bar dataKey="up" stackId="t" fill="#10b981" radius={4} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* BENCHMARKS */}
+            <CollapsibleSection title="Benchmarks and sources" icon={<BookOpen className="w-5 h-5 text-slate-500" />} locked={!isUnlocked} onUnlock={() => setShowModal(true)}>
+              <p className="text-sm text-slate-600">We compared your inputs with public references where they exist. These are reference ranges from public sources, mostly US or global vendor data, not a standard. A value outside them is not wrong, but be ready to explain it.</p>
+              <div className="mt-4 space-y-4">
+                {BENCHMARKS.map((b) => {
+                  const v = b.value(inputs);
+                  const status = v === null || b.noStatus ? null : (v < b.range[0] ? 'Below reference range' : (v > b.range[1] ? 'Above reference range' : 'Within reference range'));
+                  return (
+                    <div key={b.label} className="border-t border-slate-100 pt-4 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <strong className="text-slate-900">{b.label}</strong>
+                        {status && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${status.startsWith('Within') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{status}</span>}
+                      </div>
+                      <div className="text-slate-600 mt-1">Your value: <strong>{v === null ? 'n/a for this pricing model' : `${Math.round(v * 100) / 100} ${b.unit}`}</strong>. Reference range: {b.range[0]} to {b.range[1]} {b.unit}.</div>
+                      <div className="text-slate-500 mt-1">{b.note} Source: <a href={b.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-800">{b.source}</a></div>
+                    </div>
+                  );
+                })}
+                <div className="border-t border-slate-100 pt-4 text-sm text-slate-600">
+                  <strong className="text-slate-900">Planning assumptions.</strong> We found no reliable public benchmark for lines of code per developer per day, review hours per senior, realization rate, confidence in avoided cost, setup cost, adoption ramp, defect rate and cost per defect, growth rates or the discount rate. Replace them with your own data. They are the inputs most likely to be questioned.
+                </div>
+              </div>
+            </CollapsibleSection>
+
             {/* HOW TO READ (no formulas on purpose) */}
             <details className="group bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <summary className="cursor-pointer font-bold text-slate-900 flex items-center gap-2 list-none">
                 <Info className="w-5 h-5 text-slate-500" /> How to read these results
-                <span className="ml-auto text-xs font-semibold text-slate-500 group-open:hidden">Show</span>
-                <span className="ml-auto text-xs font-semibold text-slate-500 hidden group-open:inline">Hide</span>
+                <span className="ml-auto text-sm font-semibold text-slate-600 group-open:hidden">Show</span>
+                <span className="ml-auto text-sm font-semibold text-slate-600 hidden group-open:inline">Hide</span>
               </summary>
               <div className="mt-4 space-y-4 text-sm text-slate-600 leading-relaxed">
                 <p><strong className="text-slate-800">Overload (backlog).</strong> Every team has a limit on how much code its senior engineers can review in a day. When the code coming in is more than that limit, the extra piles up as backlog: reviews that get delayed or skipped. That pile is the risk this tool puts a number on.</p>
@@ -1492,13 +1674,20 @@ export default function App() {
                 <p><strong className="text-slate-800">Valuing the backlog.</strong> You can price the backlog AI clears in two ways: by the review effort it would take, or by the bugs that would otherwise slip into production. Only one is used at a time, so nothing is counted twice. Growth and the discount rate then show how the three years look as your code and salaries grow, and what the money is worth in today's terms.</p>
                 <p><strong className="text-slate-800">Why a higher hourly rate can improve the result.</strong> The software costs the same whatever your seniors earn, but every hour AI frees or every backlog hour it clears is worth more. The As-Is panel shows how much more your current setup costs when salaries rise.</p>
                 <p><strong className="text-slate-800">A common situation.</strong> A busy team with a large backlog adopts AI. The backlog shrinks a lot, but the seniors stay just as busy. The conservative ROI looks weak and the strategic ROI looks strong. Neither is wrong: the value is in risk and speed, not in cutting payroll.</p>
-                <p className="text-xs text-slate-500">These are estimates to support a decision, based on the numbers you enter. They are not guarantees.</p>
+                <p className="text-xs text-slate-600">These are estimates to support a decision, based on the numbers you enter. They are not guarantees.</p>
               </div>
             </details>
 
           </div>
         </div>
       </div>
+
+      {/* JUMP TO RESULTS (stacked layout only) */}
+      {!resultsInView && (
+        <button onClick={jumpToResults} className="xl:hidden fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-full bg-[#f52e01] hover:bg-[#ff4117] text-white text-sm font-bold px-5 py-3 shadow-lg">
+          Go to results <ChevronRight className="w-4 h-4 rotate-90" />
+        </button>
+      )}
 
       {/* LEAD CAPTURE MODAL */}
       {showModal && (
@@ -1514,7 +1703,7 @@ export default function App() {
               {leadError && <p className="text-sm text-red-600">{leadError}</p>}
               <button type="submit" disabled={leadSubmitting} className="w-full bg-[#f52e01] hover:bg-[#ff4117] disabled:opacity-60 text-white font-bold py-3 rounded-lg shadow-md transition-colors">{leadSubmitting ? 'Unlocking...' : 'Subscribe & Unlock Free'}</button>
             </form>
-            <div className="mt-6 flex justify-between items-center text-xs text-slate-500">
+            <div className="mt-6 flex justify-between items-center text-xs text-slate-600">
                <span><Lock className="w-3 h-3 inline"/> 100% Secure.</span>
                <button onClick={() => setShowModal(false)} className="hover:text-slate-800 font-bold">Close</button>
             </div>
