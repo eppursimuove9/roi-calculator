@@ -166,9 +166,9 @@ function ChartTooltip({ active, payload, label }) {
 
 // ---------- PURE MODEL (shared by the UI, scenarios, sensitivity, PDF and Excel) ----------
 function calcModel(inp) {
-  const { devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, hourlyRate, targetAutomation, humanInTheLoop, savingsRealizationRate, softwareCost, pricingModel, costPer1kLoc, avoidedCostConfidence, implementationCost, rampMonths } = inp;
+  const { devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, hourlyRate, targetAutomation, humanInTheLoop, savingsRealizationRate, softwareCost, pricingModel, costPer1kLoc, avoidedCostConfidence, implementationCost, rampMonths, currentToolCost, avoidedBasis, defectsPer1kLoc, costPerDefect, discountRate, volumeGrowth, salaryGrowth, workingDays } = inp;
   // --- LOGIC AND MATH CALCULATIONS (CFO-READY) ---
-  const workingDaysPerYear = 230;
+  const workingDaysPerYear = workingDays;
 
   // Demand
   const totalDailyLoc = devs * locPerDev;
@@ -179,7 +179,8 @@ function calcModel(inp) {
 
   // As-Is Scenario
   // Same human-in-the-loop rate is applied to current automation so both scenarios are comparable
-  const asIsHitl = humanInTheLoop / 100;
+  // Today's follow-up rate is a fact about the team. Scenarios and sensitivity change only the future rate.
+  const asIsHitl = (inp.asIsHumanInTheLoop ?? humanInTheLoop) / 100;
   const asIsAiHandledRaw = rawReviewDemandHours * (automation / 100);
   const asIsAiFailedToHuman = asIsAiHandledRaw * asIsHitl;
   const asIsNetAiHandled = asIsAiHandledRaw - asIsAiFailedToHuman;
@@ -208,13 +209,21 @@ function calcModel(inp) {
   // 2. Risk Mitigation (Value of Tech Debt / Backlog cleared by AI)
   const techDebtClearedDailyHours = Math.max(0, asIsBacklog - toBeBacklog);
   // Counterfactual: what it would cost to clear this backlog manually (hours x rate). Not cash.
-  const annualTechDebtValue = techDebtClearedDailyHours * workingDaysPerYear * hourlyRate;
+  // Two ways to price the same cleared backlog (never both, so nothing is counted twice):
+  //  - effort: hours x hourly rate. - defects: lines of code cleared x escaped-defect rate x cost per defect.
+  const locPerReviewHour = minsPer500 > 0 ? 30000 / minsPer500 : 0;
+  const clearedLocPerYear = techDebtClearedDailyHours * workingDaysPerYear * locPerReviewHour;
+  const avoidedDefectsPerYear = (clearedLocPerYear / 1000) * defectsPer1kLoc;
+  const annualTechDebtValue = avoidedBasis === 'defects'
+    ? avoidedDefectsPerYear * costPerDefect
+    : techDebtClearedDailyHours * workingDaysPerYear * hourlyRate;
   const confidenceAdjustedAvoidedCost = annualTechDebtValue * (avoidedCostConfidence / 100);
 
   // Software Costing
   const annualLoc = totalDailyLoc * workingDaysPerYear;
-  // Tokens are only consumed on the code the AI actually reviews
-  const tokenAnnualCost = (annualLoc / 1000) * costPer1kLoc * toBeAiCoverage;
+  // Only the added coverage is new spend: the share the team already automates is already being paid for
+  const incrementalCoverage = Math.max(0, toBeAiCoverage - automation / 100);
+  const tokenAnnualCost = (annualLoc / 1000) * costPer1kLoc * incrementalCoverage;
   const calculatedSoftwareCost = pricingModel === 'saas' ? softwareCost : tokenAnnualCost;
 
   // ROI & Payback (Calculated strictly on Hard Savings)
@@ -223,46 +232,55 @@ function calcModel(inp) {
   const paybackMonths = realizedHardSavings > 0 ? (calculatedSoftwareCost / realizedHardSavings) * 12 : null;
   const isNegativeRoi = roiPercentage !== null && roiPercentage < 0;
 
-  // Strategic view: hard savings + effectiveness-weighted avoided cost (clearly labeled as non-cash)
+  // Strategic view: hard savings + confidence-adjusted avoided cost (clearly labeled as non-cash)
   const strategicBenefit = realizedHardSavings + confidenceAdjustedAvoidedCost;
   const strategicRoi = calculatedSoftwareCost > 0 ? ((strategicBenefit - calculatedSoftwareCost) / calculatedSoftwareCost) * 100 : null;
   const isNegativeStrategic = strategicRoi !== null && strategicRoi < 0;
 
-  // --- Three-year projection: one-time setup cost + linear adoption ramp ---
-  const hardM = realizedHardSavings / 12;
-  const avoidM = confidenceAdjustedAvoidedCost / 12;
-  const swM = calculatedSoftwareCost / 12;
+  // --- Three-year projection: setup cost, adoption ramp, growth and present value ---
+  const growthOn = volumeGrowth !== 0 || salaryGrowth !== 0;
+  const yearFig = [0, 1, 2].map((y) => {
+    if (y === 0 || !growthOn) return { hard: realizedHardSavings, avoidedFull: annualTechDebtValue, avoided: confidenceAdjustedAvoidedCost, software: calculatedSoftwareCost };
+    // Later years: same model with more code and a higher hourly rate (capacity stays fixed)
+    const q = calcModel({ ...inp, locPerDev: locPerDev * Math.pow(1 + volumeGrowth / 100, y), hourlyRate: hourlyRate * Math.pow(1 + salaryGrowth / 100, y), volumeGrowth: 0, salaryGrowth: 0 });
+    return { hard: q.realizedHardSavings, avoidedFull: q.annualTechDebtValue, avoided: q.confidenceAdjustedAvoidedCost, software: q.calculatedSoftwareCost };
+  });
+  const monthlyRate = Math.pow(1 + discountRate / 100, 1 / 12) - 1;
   const series = [{ month: 0, cumHard: -implementationCost, cumStrategic: -implementationCost }];
   const years = [0, 1, 2].map(() => ({ hard: 0, avoided: 0, software: 0 }));
-  let cumH = -implementationCost, cumS = -implementationCost;
-  let paybackHardMonth = null, paybackStrategicMonth = null, rampSum = 0;
+  let cumH = -implementationCost, cumS = -implementationCost, npvH = -implementationCost, npvS = -implementationCost;
+  let paybackHardMonth = null, paybackStrategicMonth = null, avoidedFull3 = 0;
   for (let mo = 1; mo <= 36; mo++) {
+    const yi = Math.floor((mo - 1) / 12);
+    const f = yearFig[yi];
     const ramp = rampMonths <= 0 ? 1 : Math.min(1, mo / rampMonths);
-    rampSum += ramp;
-    const h = hardM * ramp, av = avoidM * ramp;
-    cumH += h - swM; cumS += h + av - swM;
-    const y = years[Math.floor((mo - 1) / 12)];
-    y.hard += h; y.avoided += av; y.software += swM;
+    const h = (f.hard / 12) * ramp, av = (f.avoided / 12) * ramp, sw = f.software / 12;
+    avoidedFull3 += (f.avoidedFull / 12) * ramp;
+    cumH += h - sw; cumS += h + av - sw;
+    const df = 1 / Math.pow(1 + monthlyRate, mo);
+    npvH += (h - sw) * df; npvS += (h + av - sw) * df;
+    const y = years[yi];
+    y.hard += h; y.avoided += av; y.software += sw;
     if (paybackHardMonth === null && cumH >= 0) paybackHardMonth = mo;
     if (paybackStrategicMonth === null && cumS >= 0) paybackStrategicMonth = mo;
     series.push({ month: mo, cumHard: Math.round(cumH), cumStrategic: Math.round(cumS) });
   }
   const tot = (k) => years.reduce((acc, y) => acc + y[k], 0);
   const cost3 = tot('software') + implementationCost;
-  // Lowest AI effectiveness (as % of a senior's review) at which the 3-year investment breaks even.
-  // 0 = hard savings alone cover it. null = it cannot break even. Above 100 = not even if the AI matched a senior.
-  const avoidedFull3 = (annualTechDebtValue / 12) * rampSum;
+  // Lowest confidence in avoided cost (%) at which the 3-year investment breaks even.
+  // 0 = hard savings alone cover it. null = it cannot break even. Above 100 = not even if all the avoided cost were real.
   const beGap = cost3 - tot('hard');
   const breakEven = beGap <= 0 ? 0 : (avoidedFull3 > 0 ? (beGap / avoidedFull3) * 100 : null);
   const hardNet = tot('hard') - cost3;
   const strategicNet = tot('hard') + tot('avoided') - cost3;
   const threeYear = {
     series, years, paybackHardMonth, paybackStrategicMonth, hardNet, strategicNet, cost: cost3, breakEven,
+    hardNpv: npvH, strategicNpv: npvS,
     hardRoi: cost3 > 0 ? (hardNet / cost3) * 100 : null,
     strategicRoi: cost3 > 0 ? (strategicNet / cost3) * 100 : null,
   };
   // flat copies so scenarios and sensitivity can read them by key
-  return { workingDaysPerYear, totalDailyLoc, rawReviewDemandHours, capacityHours, asIsHitl, asIsAiHandledRaw, asIsAiFailedToHuman, asIsNetAiHandled, asIsHumanDemand, asIsExecuted, asIsBacklog, toBeAiCoverage, toBeHitl, toBeAiHandledRaw, toBeAiFailedToHuman, toBeNetAiHandled, toBeTotalHumanDemand, toBeExecuted, toBeBacklog, hardSavingsDailyHours, annualHardSavingsValue, realizedHardSavings, techDebtClearedDailyHours, annualTechDebtValue, confidenceAdjustedAvoidedCost, annualLoc, tokenAnnualCost, calculatedSoftwareCost, netAnnualBenefit, roiPercentage, paybackMonths, isNegativeRoi, strategicBenefit, strategicRoi, isNegativeStrategic, threeYear, threeYearHardNet: hardNet, threeYearStrategicNet: strategicNet };
+  return { avoidedDefectsPerYear, workingDaysPerYear, totalDailyLoc, rawReviewDemandHours, capacityHours, asIsHitl, asIsAiHandledRaw, asIsAiFailedToHuman, asIsNetAiHandled, asIsHumanDemand, asIsExecuted, asIsBacklog, toBeAiCoverage, toBeHitl, toBeAiHandledRaw, toBeAiFailedToHuman, toBeNetAiHandled, toBeTotalHumanDemand, toBeExecuted, toBeBacklog, hardSavingsDailyHours, annualHardSavingsValue, realizedHardSavings, techDebtClearedDailyHours, annualTechDebtValue, confidenceAdjustedAvoidedCost, annualLoc, tokenAnnualCost, calculatedSoftwareCost, netAnnualBenefit, roiPercentage, paybackMonths, isNegativeRoi, strategicBenefit, strategicRoi, isNegativeStrategic, threeYear, threeYearHardNet: hardNet, threeYearStrategicNet: strategicNet };
 }
 
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -272,6 +290,8 @@ const INPUT_LIMITS = {
   minsPer500: [5, 120], hourlyRate: [30, 500], targetAutomation: [0, 100], humanInTheLoop: [0, 100],
   savingsRealizationRate: [0, 100], softwareCost: [0, 1000000], costPer1kLoc: [0.01, 5], avoidedCostConfidence: [0, 100],
   implementationCost: [0, 1000000], rampMonths: [0, 24],
+  currentToolCost: [0, 1000000], defectsPer1kLoc: [0, 5], costPerDefect: [0, 100000], discountRate: [0, 30],
+  volumeGrowth: [0, 50], salaryGrowth: [0, 15], workingDays: [150, 260],
 };
 // Turns untrusted data (share link, saved scenario) into a safe inputs object
 function sanitizeInputs(raw) {
@@ -282,6 +302,7 @@ function sanitizeInputs(raw) {
     if (raw[k] !== undefined && raw[k] !== null && raw[k] !== '' && Number.isFinite(n)) out[k] = clampTo(n, lo, hi);
   });
   if (raw.pricingModel === 'saas' || raw.pricingModel === 'tokens') out.pricingModel = raw.pricingModel;
+  if (raw.avoidedBasis === 'effort' || raw.avoidedBasis === 'defects') out.avoidedBasis = raw.avoidedBasis;
   return out;
 }
 
@@ -297,7 +318,7 @@ function scenarioInputs(inp, kind) {
   const mul = bad ? 1.25 : 0.85;
   return {
     ...inp,
-    targetAutomation: clampTo(inp.targetAutomation + (bad ? -15 : 10), inp.automation, 100),
+    asIsHumanInTheLoop: inp.asIsHumanInTheLoop ?? inp.humanInTheLoop,
     humanInTheLoop: clampTo(inp.humanInTheLoop + (bad ? 10 : -5), 0, 100),
     savingsRealizationRate: clampTo(inp.savingsRealizationRate + (bad ? -25 : 20), 0, 100),
     avoidedCostConfidence: clampTo(inp.avoidedCostConfidence + (bad ? -25 : 20), 0, 100),
@@ -311,9 +332,9 @@ function scenarioInputs(inp, kind) {
 // Each variable is nudged down (-1) and up (+1) by a typical margin
 const SENS_VARS = [
   { label: 'AI automation level', apply: (i, d) => ({ ...i, targetAutomation: clampTo(i.targetAutomation + 15 * d, i.automation, 100) }) },
-  { label: 'Human-in-the-loop rate', apply: (i, d) => ({ ...i, humanInTheLoop: clampTo(i.humanInTheLoop + 10 * d, 0, 100) }) },
+  { label: 'Human-in-the-loop rate', apply: (i, d) => ({ ...i, asIsHumanInTheLoop: i.asIsHumanInTheLoop ?? i.humanInTheLoop, humanInTheLoop: clampTo(i.humanInTheLoop + 10 * d, 0, 100) }) },
   { label: 'Savings realization', apply: (i, d) => ({ ...i, savingsRealizationRate: clampTo(i.savingsRealizationRate + 25 * d, 0, 100) }) },
-  { label: 'AI effectiveness vs. a senior', apply: (i, d) => ({ ...i, avoidedCostConfidence: clampTo(i.avoidedCostConfidence + 25 * d, 0, 100) }) },
+  { label: 'Confidence in avoided cost', apply: (i, d) => ({ ...i, avoidedCostConfidence: clampTo(i.avoidedCostConfidence + 25 * d, 0, 100) }) },
   { label: 'Review speed (min / 500 LOC)', apply: (i, d) => ({ ...i, minsPer500: clampTo(i.minsPer500 * (1 + 0.3 * d), 5, 240) }) },
   { label: 'Senior hourly rate', apply: (i, d) => ({ ...i, hourlyRate: i.hourlyRate * (1 + 0.2 * d) }) },
   { label: 'Code volume per developer', apply: (i, d) => ({ ...i, locPerDev: i.locPerDev * (1 + 0.25 * d) }) },
@@ -336,17 +357,14 @@ const BENCHMARKS = [
   { label: 'Minutes to audit 500 LOC', value: (i) => i.minsPer500, range: [60, 100], unit: 'min',
     note: 'Effective reviews run below 300 to 500 lines per hour, which is 60 to 100 minutes per 500 lines.',
     source: 'SmartBear / Cisco peer code review study', url: 'https://smartbear.com/learn/code-review/best-practices-for-peer-code-review' },
-  { label: 'Senior hourly rate', value: (i) => i.hourlyRate, range: [64, 105], unit: '$/h',
-    note: 'The median software developer wage is about $64/h and the top quartile about $81/h, before benefits and overhead. The upper bound adds roughly 30% (our estimate).',
+  { label: 'Senior hourly rate (US reference)', value: (i) => i.hourlyRate, range: [64, 105], unit: '$/h', noStatus: true,
+    note: 'The median software developer wage is about $64/h and the top quartile about $81/h, before benefits and overhead. The upper bound adds roughly 30% (our estimate). Rates differ a lot by country, so use your own.',
     source: 'US Bureau of Labor Statistics, May 2024', url: 'https://www.bls.gov/ooh/computer-and-information-technology/software-developers.htm' },
   { label: 'Software cost per developer, per year', value: (i) => (i.pricingModel === 'saas' ? i.softwareCost / i.devs : null), range: [288, 864], unit: '$/dev/yr',
     note: 'Published AI code review seats cost $24 to $72 per developer per month on annual billing. Enterprise platforms are quoted and can cost more.',
     source: 'CodeRabbit public pricing', url: 'https://www.coderabbit.ai/pricing' },
   { label: 'Human-in-the-loop rate', value: (i) => i.humanInTheLoop, range: [20, 50], unit: '%',
     note: 'Indicative only. One third-party comparison reports AI reviewers at roughly 50 to 66% precision or recall, so a meaningful share of their output still needs a person.',
-    source: 'Morph comparison of CodeRabbit and Greptile', url: 'https://www.morphllm.com/comparisons/coderabbit-vs-greptile' },
-  { label: 'AI effectiveness vs. a senior', value: (i) => i.avoidedCostConfidence, range: [50, 66], unit: '%',
-    note: 'Indicative only. One third-party comparison reports AI reviewers at 52.5% recall and 66.2% precision across 317K reviews. It is a proxy, not a direct measure of equivalence with a senior.',
     source: 'Morph comparison of CodeRabbit and Greptile', url: 'https://www.morphllm.com/comparisons/coderabbit-vs-greptile' },
 ];
 
@@ -382,10 +400,14 @@ function buildWorkbook(XLSX, { inputs, m, scenarioResults, tornado, tornadoLabel
     ['Senior engineers', inputs.seniors], ['Review hours per senior per day', inputs.dailyReviewHoursPerSenior],
     ['Minutes to audit 500 LOC', inputs.minsPer500], ['Senior hourly rate (USD)', inputs.hourlyRate],
     ['Human-in-the-loop (%)', inputs.humanInTheLoop], ['Savings realization (%)', inputs.savingsRealizationRate],
-    ['AI effectiveness vs. a senior (%)', inputs.avoidedCostConfidence],
+    ['Confidence in avoided cost (%)', inputs.avoidedCostConfidence],
     ['Pricing model', inputs.pricingModel === 'saas' ? 'SaaS license' : 'API tokens'],
     ['Annual software cost (USD)', c(m.calculatedSoftwareCost, usd)],
     ['One-time setup cost (USD)', c(inputs.implementationCost, usd)], ['Adoption ramp (months)', inputs.rampMonths],
+    ['Current AI tool cost (USD per year)', c(inputs.currentToolCost, usd)], ['Working days per year', inputs.workingDays],
+    ['How the cleared backlog is valued', inputs.avoidedBasis === 'defects' ? 'Defects avoided' : 'Review effort'],
+    ['Escaped defects per 1k unreviewed LOC', inputs.defectsPer1kLoc], ['Cost per escaped defect (USD)', c(inputs.costPerDefect, usd)],
+    ['Code volume growth per year (%)', inputs.volumeGrowth], ['Hourly rate growth per year (%)', inputs.salaryGrowth], ['Discount rate (%)', inputs.discountRate],
   ], [38, 18]);
   add('As-Is vs To-Be', [
     ['Per day', 'As-Is', 'To-Be'],
@@ -397,8 +419,8 @@ function buildWorkbook(XLSX, { inputs, m, scenarioResults, tornado, tornadoLabel
     ['Reviewed by AI (h)', c(m.asIsNetAiHandled, hrs), c(m.toBeNetAiHandled, hrs)],
     [], ['Per year (steady state)', 'Value'],
     ['Realized hard savings (USD)', c(m.realizedHardSavings, usd)],
-    ['Avoided review cost, 100% (USD, non-cash)', c(m.annualTechDebtValue, usd)],
-    ['Avoided review cost, effectiveness-weighted (USD)', c(m.confidenceAdjustedAvoidedCost, usd)],
+    ['Avoided cost, 100% (USD, non-cash)', c(m.annualTechDebtValue, usd)],
+    ['Avoided cost after confidence (USD)', c(m.confidenceAdjustedAvoidedCost, usd)],
     ['Conservative ROI', m.roiPercentage === null ? 'N/A' : c(m.roiPercentage / 100, pct)],
     ['Strategic ROI', m.strategicRoi === null ? 'N/A' : c(m.strategicRoi / 100, pct)],
   ], [46, 16, 16]);
@@ -410,7 +432,9 @@ function buildWorkbook(XLSX, { inputs, m, scenarioResults, tornado, tornadoLabel
     ['Strategic ROI', ...scenarioResults.map((s) => (s.m.strategicRoi === null ? 'N/A' : c(s.m.strategicRoi / 100, pct)))],
     ['3-year net, hard savings only (USD)', ...scenarioResults.map((s) => c(s.m.threeYear.hardNet, usd))],
     ['3-year net, incl. avoided cost (USD)', ...scenarioResults.map((s) => c(s.m.threeYear.strategicNet, usd))],
-    ['Break-even AI effectiveness', ...scenarioResults.map((s) => (s.m.threeYear.breakEven === null ? 'Not reachable' : c(s.m.threeYear.breakEven / 100, pct)))],
+    ['3-year present value, hard savings only (USD)', ...scenarioResults.map((s) => c(s.m.threeYear.hardNpv, usd))],
+    ['3-year present value, incl. avoided cost (USD)', ...scenarioResults.map((s) => c(s.m.threeYear.strategicNpv, usd))],
+    ['Break-even confidence', ...scenarioResults.map((s) => (s.m.threeYear.breakEven === null ? 'Not reachable' : c(s.m.threeYear.breakEven / 100, pct)))],
   ], [40, 16, 16, 16]);
   add('3-Year View', [
     ['Month', 'Cumulative net, hard only (USD)', 'Cumulative net, incl. avoided cost (USD)'],
@@ -446,7 +470,7 @@ export default function App() {
   const [costPer1kLoc, setCostPer1kLoc] = useState(0.15);
 
   // --- PAYWALL STATE (Lead Capture) ---
-  const [avoidedCostConfidence, setAvoidedCostConfidence] = useState(55); // how much an AI review is worth vs. a senior's (benchmarks: ~50-66%)
+  const [avoidedCostConfidence, setAvoidedCostConfidence] = useState(50); // % of the avoided manual-review cost the user is confident to count
   const [leadEmail, setLeadEmail] = useState("");
   const [leadError, setLeadError] = useState("");
   const [leadSubmitting, setLeadSubmitting] = useState(false);
@@ -467,6 +491,14 @@ export default function App() {
   const [showGuide, setShowGuide] = useState(true);
   const [implementationCost, setImplementationCost] = useState(10000); // one-time setup, planning assumption
   const [rampMonths, setRampMonths] = useState(3); // months to reach full effect, planning assumption
+  const [currentToolCost, setCurrentToolCost] = useState(0); // what the team already pays for AI review tools
+  const [avoidedBasis, setAvoidedBasis] = useState('effort'); // 'effort' | 'defects'
+  const [defectsPer1kLoc, setDefectsPer1kLoc] = useState(0.1); // planning assumption (no public benchmark), used only with the defects basis
+  const [costPerDefect, setCostPerDefect] = useState(2000); // planning assumption (no public benchmark), used only with the defects basis
+  const [discountRate, setDiscountRate] = useState(10); // planning assumption for present value
+  const [volumeGrowth, setVolumeGrowth] = useState(0); // yearly growth in code volume
+  const [salaryGrowth, setSalaryGrowth] = useState(0); // yearly growth in the hourly rate
+  const [workingDays, setWorkingDays] = useState(230);
   const [sensMetric, setSensMetric] = useState('threeYearHardNet');
   const [isGeneratingXlsx, setIsGeneratingXlsx] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -486,10 +518,11 @@ export default function App() {
     setAiError("");
   }, [
     devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, 
-    hourlyRate, targetAutomation, humanInTheLoop, softwareCost, pricingModel, costPer1kLoc, savingsRealizationRate, avoidedCostConfidence, implementationCost, rampMonths
+    hourlyRate, targetAutomation, humanInTheLoop, softwareCost, pricingModel, costPer1kLoc, savingsRealizationRate, avoidedCostConfidence, implementationCost, rampMonths,
+    currentToolCost, avoidedBasis, defectsPer1kLoc, costPerDefect, discountRate, volumeGrowth, salaryGrowth, workingDays
   ]);
 
-  const inputs = { devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, hourlyRate, targetAutomation, humanInTheLoop, savingsRealizationRate, softwareCost, pricingModel, costPer1kLoc, avoidedCostConfidence, implementationCost, rampMonths };
+  const inputs = { devs, locPerDev, automation, seniors, dailyReviewHoursPerSenior, minsPer500, hourlyRate, targetAutomation, humanInTheLoop, savingsRealizationRate, softwareCost, pricingModel, costPer1kLoc, avoidedCostConfidence, implementationCost, rampMonths, currentToolCost, avoidedBasis, defectsPer1kLoc, costPerDefect, discountRate, volumeGrowth, salaryGrowth, workingDays };
   const m = calcModel(inputs);
   const { workingDaysPerYear, totalDailyLoc, rawReviewDemandHours, capacityHours, asIsHitl, asIsAiHandledRaw, asIsAiFailedToHuman, asIsNetAiHandled, asIsHumanDemand, asIsExecuted, asIsBacklog, toBeAiCoverage, toBeHitl, toBeAiHandledRaw, toBeAiFailedToHuman, toBeNetAiHandled, toBeTotalHumanDemand, toBeExecuted, toBeBacklog, hardSavingsDailyHours, annualHardSavingsValue, realizedHardSavings, techDebtClearedDailyHours, annualTechDebtValue, confidenceAdjustedAvoidedCost, annualLoc, tokenAnnualCost, calculatedSoftwareCost, netAnnualBenefit, roiPercentage, paybackMonths, isNegativeRoi, strategicBenefit, strategicRoi, isNegativeStrategic } = m;
   const ty = m.threeYear;
@@ -498,8 +531,9 @@ export default function App() {
   const asIsSeniorCost = asIsExecuted * workingDaysPerYear * hourlyRate;
   const asIsBacklogCost = asIsBacklog * workingDaysPerYear * hourlyRate;
   const toBeSeniorCost = asIsSeniorCost - realizedHardSavings; // after the share of freed time that becomes real savings
-  const toBeTotalCost = toBeSeniorCost + calculatedSoftwareCost;
-  const costChange = toBeTotalCost - asIsSeniorCost; // positive = costs more to operate
+  const asIsTotalCost = asIsSeniorCost + currentToolCost; // seniors plus the AI tools already paid for
+  const toBeTotalCost = toBeSeniorCost + currentToolCost + calculatedSoftwareCost;
+  const costChange = toBeTotalCost - asIsTotalCost; // positive = costs more to operate
   const asIsLoad = capacityHours > 0 ? (asIsHumanDemand / capacityHours) * 100 : 0;
   const toBeLoad = capacityHours > 0 ? (toBeTotalHumanDemand / capacityHours) * 100 : 0;
   const asIsAiShare = rawReviewDemandHours > 0 ? (asIsNetAiHandled / rawReviewDemandHours) * 100 : 0;
@@ -507,13 +541,16 @@ export default function App() {
   const backlogRemoved = Math.max(0, asIsBacklog - toBeBacklog);
   const backlogRemovedPct = asIsBacklog > 0 ? (backlogRemoved / asIsBacklog) * 100 : null;
   const strategicNetValue = strategicBenefit - calculatedSoftwareCost;
-  const paybackText = paybackMonths === null ? 'N/A' : (paybackMonths >= 36 ? `${(paybackMonths / 12).toFixed(1)} yrs` : `${paybackMonths.toFixed(1)} mo`);
+  const avoidedLabel = avoidedBasis === 'defects' ? 'Avoided defect cost' : 'Avoided review cost';
+  const avoidedWhat = avoidedBasis === 'defects' ? 'escaped-defect cost' : 'manual review effort';
   const loadTone = (v) => (v > 100 ? 'text-red-400' : 'text-emerald-400');
 
   const asIsPanel = {
     title: 'As-Is', subtitle: 'What you live with today', accent: 'border-t-slate-400', pdfColor: [71, 85, 105],
-    hero: { label: 'Yearly senior review cost', value: fmtMoney(asIsSeniorCost), note: 'What the review time your seniors actually spend costs you.' },
+    hero: { label: 'Total yearly operating cost', value: fmtMoney(asIsTotalCost), note: 'Senior review time plus the AI tools you already pay for.' },
     rows: [
+      { label: 'Senior review cost', value: fmtMoney(asIsSeniorCost) },
+      ...(currentToolCost > 0 ? [{ label: 'Current AI tool cost', value: fmtMoney(currentToolCost) }] : []),
       { label: 'Review demand vs. capacity', value: fmtPct(asIsLoad), tone: loadTone(asIsLoad) },
       { label: 'Backlog per day', value: `${asIsBacklog.toFixed(1)} h`, tone: asIsBacklog > 0 ? 'text-red-400' : 'text-emerald-400' },
       { label: 'Cost to review the backlog by hand (yearly)', value: fmtMoney(asIsBacklogCost), tone: asIsBacklog > 0 ? 'text-amber-400' : 'text-white' },
@@ -523,10 +560,11 @@ export default function App() {
   };
   const toBePanel = {
     title: 'To-Be', subtitle: 'Where you want to get', accent: 'border-t-violet-500', pdfColor: [124, 58, 237],
-    hero: { label: 'Total yearly operating cost', value: fmtMoney(toBeTotalCost), note: 'Senior review time plus the software.' },
+    hero: { label: 'Total yearly operating cost', value: fmtMoney(toBeTotalCost), note: 'Senior review time plus all AI software costs.' },
     rows: [
       { label: 'Senior review cost (after expected savings)', value: fmtMoney(toBeSeniorCost) },
-      { label: 'Software cost', value: fmtMoney(calculatedSoftwareCost) },
+      ...(currentToolCost > 0 ? [{ label: 'Current AI tool cost', value: fmtMoney(currentToolCost) }] : []),
+      { label: 'Added software cost', value: fmtMoney(calculatedSoftwareCost) },
       { label: 'Review demand vs. capacity', value: fmtPct(toBeLoad), tone: loadTone(toBeLoad) },
       { label: 'Backlog per day', value: `${toBeBacklog.toFixed(1)} h`, tone: toBeBacklog > 0 ? 'text-red-400' : 'text-emerald-400' },
       { label: 'Senior review hours per day', value: `${toBeExecuted.toFixed(1)} h` },
@@ -542,10 +580,10 @@ export default function App() {
     },
     rows: [
       { label: 'Backlog removed per day', value: `${backlogRemoved.toFixed(1)} h${backlogRemovedPct !== null ? ` (${Math.round(backlogRemovedPct)}%)` : ''}`, tone: backlogRemoved > 0 ? 'text-emerald-400' : 'text-white' },
-      { label: `Avoided review cost (${avoidedCostConfidence}% AI effectiveness, non-cash)`, value: `+${fmtMoney(confidenceAdjustedAvoidedCost)}`, tone: 'text-amber-400' },
-      { label: 'Conservative ROI (hard savings only)', value: fmtPct(roiPercentage), tone: isNegativeRoi ? 'text-red-400' : 'text-emerald-400' },
-      { label: 'Strategic ROI (incl. avoided cost)', value: fmtRoi(strategicRoi), tone: isNegativeStrategic ? 'text-red-400' : 'text-emerald-400' },
-      { label: 'Payback (hard savings only)', value: paybackText, tone: paybackMonths === null || isNegativeRoi ? 'text-red-400' : 'text-emerald-400' },
+      { label: `${avoidedLabel} (${avoidedCostConfidence}% confidence, non-cash)`, value: `+${fmtMoney(confidenceAdjustedAvoidedCost)}`, tone: 'text-amber-400' },
+      { label: 'Conservative ROI (steady state, hard savings)', value: fmtPct(roiPercentage), tone: isNegativeRoi ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Strategic ROI (steady state, incl. avoided cost)', value: fmtRoi(strategicRoi), tone: isNegativeStrategic ? 'text-red-400' : 'text-emerald-400' },
+      { label: 'Payback, hard savings (incl. setup and ramp)', value: ty.paybackHardMonth ? `Month ${ty.paybackHardMonth}` : 'Not within 36 months', tone: ty.paybackHardMonth ? 'text-emerald-400' : 'text-red-400' },
     ],
     footnote: hardSavingsDailyHours === 0 && toBeLoad > 100
       ? 'Your team is still at its capacity limit with AI, so there is no cash saving. The value is in the backlog removed.'
@@ -559,11 +597,11 @@ export default function App() {
       note: 'Including avoided cost, after setup cost and the adoption ramp.' },
     { label: 'Payback', value: ty.paybackStrategicMonth ? `Month ${ty.paybackStrategicMonth}` : 'Not within 36 months', tone: ty.paybackStrategicMonth ? 'text-emerald-400' : 'text-red-400',
       note: `Including avoided cost. Hard savings only: ${ty.paybackHardMonth ? `month ${ty.paybackHardMonth}` : 'not within 36 months'}.` },
-    { label: 'Break-even AI effectiveness', value: fmtBreakEven(breakEven), tone: breakEven === null || breakEven > 100 ? 'text-red-400' : 'text-emerald-400',
+    { label: 'Break-even confidence', value: fmtBreakEven(breakEven), tone: breakEven === null || breakEven > 100 ? 'text-red-400' : 'text-emerald-400',
       note: breakEven === null ? 'There is no avoided cost to count and hard savings do not cover the cost.'
         : (breakEven === 0 ? 'Hard savings alone cover the 3-year cost.'
-        : (breakEven > 100 ? 'Not reachable, even if the AI matched a senior.'
-        : `The investment breaks even over 3 years if AI reviews are worth at least this much of a senior's. You assumed ${avoidedCostConfidence}%.`)) },
+        : (breakEven > 100 ? 'Not reachable, even if all of the avoided cost were real.'
+        : `The investment breaks even over 3 years if at least this share of the avoided cost is real. You assumed ${avoidedCostConfidence}%.`)) },
   ];
 
   // --- CHART DATA (one bar per scenario; segments in SEGMENTS order) ---
@@ -580,9 +618,11 @@ export default function App() {
     { label: 'Backlog removed per day', values: scenarioResults.map((x) => `${x.m.techDebtClearedDailyHours.toFixed(1)} h`) },
     { label: 'Conservative ROI (steady state)', values: scenarioResults.map((x) => fmtPct(x.m.roiPercentage)) },
     { label: 'Strategic ROI (steady state)', values: scenarioResults.map((x) => fmtRoi(x.m.strategicRoi)) },
-    { label: 'Break-even AI effectiveness', values: scenarioResults.map((x) => fmtBreakEven(x.m.threeYear.breakEven)) },
+    { label: 'Break-even confidence', values: scenarioResults.map((x) => fmtBreakEven(x.m.threeYear.breakEven)) },
     { label: '3-year net, hard savings only', values: scenarioResults.map((x) => signedMoney(x.m.threeYear.hardNet)) },
     { label: '3-year net, incl. avoided cost', values: scenarioResults.map((x) => signedMoney(x.m.threeYear.strategicNet)) },
+    { label: `3-year present value at ${discountRate}%, hard savings only`, values: scenarioResults.map((x) => signedMoney(x.m.threeYear.hardNpv)) },
+    { label: `3-year present value at ${discountRate}%, incl. avoided cost`, values: scenarioResults.map((x) => signedMoney(x.m.threeYear.strategicNpv)) },
   ];
   const tornado = computeTornado(inputs, sensMetric);
   const tornadoLabel = sensMetric === 'threeYearHardNet' ? 'hard savings only' : 'incl. avoided cost';
@@ -605,7 +645,9 @@ export default function App() {
     const setters = { devs: setDevs, locPerDev: setLocPerDev, automation: setAutomation, seniors: setSeniors, dailyReviewHoursPerSenior: setDailyReviewHoursPerSenior,
       minsPer500: setMinsPer500, hourlyRate: setHourlyRate, targetAutomation: setTargetAutomation, humanInTheLoop: setHumanInTheLoop,
       savingsRealizationRate: setSavingsRealizationRate, softwareCost: setSoftwareCost, pricingModel: setPricingModel, costPer1kLoc: setCostPer1kLoc,
-      avoidedCostConfidence: setAvoidedCostConfidence, implementationCost: setImplementationCost, rampMonths: setRampMonths };
+      avoidedCostConfidence: setAvoidedCostConfidence, implementationCost: setImplementationCost, rampMonths: setRampMonths,
+      currentToolCost: setCurrentToolCost, avoidedBasis: setAvoidedBasis, defectsPer1kLoc: setDefectsPer1kLoc, costPerDefect: setCostPerDefect,
+      discountRate: setDiscountRate, volumeGrowth: setVolumeGrowth, salaryGrowth: setSalaryGrowth, workingDays: setWorkingDays };
     Object.entries(v).forEach(([k, val]) => setters[k](val));
   };
 
@@ -700,7 +742,7 @@ export default function App() {
   // Draws the chart with vector shapes (crisp, no screenshot needed). Returns the next free y.
   const drawChartPdf = (doc, startY) => {
     const x0 = 52, plotW = 138, rowH = 14, gap = 10;
-    const top = startY + 16;
+    const top = startY + 25;
     const plotH = 6 + chartData.length * (rowH + gap);
     const totals = chartData.map((d) => SEGMENTS.reduce((acc, sg) => acc + d[sg.key], 0));
     const maxVal = Math.max(capacityHours, ...totals, 1) * 1.1;
@@ -796,7 +838,11 @@ export default function App() {
           ['AI automation (current -> target)', `${automation}% -> ${targetAutomation}%`],
           ['Human-in-the-loop override', `${humanInTheLoop}%`],
           ['Savings realization rate', `${savingsRealizationRate}%`],
-          ['AI effectiveness vs. a senior', `${avoidedCostConfidence}%`],
+          ['Confidence in avoided cost', `${avoidedCostConfidence}%`],
+          ['Backlog valued by', avoidedBasis === 'defects' ? `Defects avoided (${defectsPer1kLoc} per 1k LOC, $${costPerDefect} each)` : 'Review effort (hours x rate)'],
+          ['Working days / current AI tool cost', `${workingDays} / $${currentToolCost}`],
+          ['Growth in code volume / hourly rate, per year', `${volumeGrowth}% / ${salaryGrowth}%`],
+          ['Setup cost / adoption ramp / discount rate', `$${implementationCost} / ${rampMonths} mo / ${discountRate}%`],
         ],
         headStyles: { fillColor: [15, 23, 42] },
       });
@@ -858,7 +904,7 @@ export default function App() {
 
       if (exportOpts.chart) {
         let y = doc.lastAutoTable.finalY + 12;
-        if (y > 180) { doc.addPage(); y = 20; }
+        if (y > 165) { doc.addPage(); y = 20; }
         drawChartPdf(doc, y);
       }
       if (exportOpts.pitch && aiSummaries.pitch) writeTextSection(doc, "Board Pitch", aiSummaries.pitch);
@@ -904,7 +950,7 @@ export default function App() {
     setAiError("");
 
     const costTypeStr = pricingModel === 'saas' ? 'CAPEX (Flat-rate Licenses)' : 'OPEX (API/Tokens Consumption)';
-    const paybackStr = paybackMonths !== null ? `${paybackMonths.toFixed(1)} months` : 'Not recoverable via hard savings';
+    const paybackStr = ty.paybackHardMonth ? `month ${ty.paybackHardMonth} (including setup cost and the adoption ramp)` : 'Not recoverable via hard savings within 36 months';
     const roiStr = roiPercentage !== null ? `${roiPercentage.toFixed(0)}%` : 'N/A';
 
     let prompt = "";
@@ -915,9 +961,9 @@ export default function App() {
       - We are accumulating a daily backlog of ${asIsBacklog.toFixed(1)} hours of unreviewed code because human capacity is capped at ${capacityHours} hrs/day.
       
       Target Scenario Value:
-      - Avoided cost (NOT cash): clearing the backlog avoids roughly $${annualTechDebtValue.toLocaleString()} USD/year of manual review effort; valuing the AI's reviews at ${avoidedCostConfidence}% of a senior's gives $${confidenceAdjustedAvoidedCost.toLocaleString()} USD.
-      - 3-year net value including avoided cost: ${signedMoney(ty.strategicNet)} USD. Break-even AI effectiveness: ${fmtBreakEven(ty.breakEven)} (the minimum share of a senior's review quality the AI must match for the investment to pay back over 3 years).
-      - Strategic ROI (hard savings + effectiveness-weighted avoided cost): ${fmtRoi(strategicRoi)}.
+      - Avoided cost (NOT cash): clearing the backlog avoids roughly $${annualTechDebtValue.toLocaleString()} USD/year of ${avoidedWhat}; a conservative ${avoidedCostConfidence}% confidence view is $${confidenceAdjustedAvoidedCost.toLocaleString()} USD.
+      - 3-year net value including avoided cost: ${signedMoney(ty.strategicNet)} USD. Break-even confidence: ${fmtBreakEven(ty.breakEven)} (the minimum share of the avoided cost that must be real for the investment to pay back over 3 years).
+      - Strategic ROI (hard savings + confidence-adjusted avoided cost): ${fmtRoi(strategicRoi)}.
       - Hard Capacity Savings: We will capture $${realizedHardSavings.toLocaleString()} USD in real capacity savings (Realization rate: ${savingsRealizationRate}%).
       - ROI (Hard Savings only): ${roiStr}. Payback: ${paybackStr}.
       
@@ -930,7 +976,7 @@ export default function App() {
       
       Financial Data:
       1. We are currently blocked, accumulating ${asIsBacklog.toFixed(1)} hours of unreviewed tech debt daily.
-      2. The investment avoids about $${annualTechDebtValue.toLocaleString()} USD/year of manual review effort on the backlog (non-cash; weighted at ${avoidedCostConfidence}% AI effectiveness: $${confidenceAdjustedAvoidedCost.toLocaleString()} USD). 3-year net value including avoided cost: ${signedMoney(ty.strategicNet)} USD. The investment breaks even over 3 years if AI reviews are worth at least ${fmtBreakEven(ty.breakEven)} of a senior's. Strategic ROI: ${fmtRoi(strategicRoi)}.
+      2. The investment avoids about $${annualTechDebtValue.toLocaleString()} USD/year of ${avoidedWhat} on the backlog (non-cash; ${avoidedCostConfidence}% confidence view: $${confidenceAdjustedAvoidedCost.toLocaleString()} USD). 3-year net value including avoided cost: ${signedMoney(ty.strategicNet)} USD. The investment breaks even over 3 years if at least ${fmtBreakEven(ty.breakEven)} of that avoided cost is real. Strategic ROI: ${fmtRoi(strategicRoi)}.
       3. It generates $${realizedHardSavings.toLocaleString()} USD in realized hard savings.
       
       ${isNegativeRoi ?
@@ -1004,21 +1050,28 @@ export default function App() {
           {/* LEFT COLUMN: Controls */}
           <div className="xl:col-span-4 space-y-6">
             
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 leading-snug">
+              <strong>Starting values are examples.</strong> Replace them with your own team's numbers.
+            </div>
+
             {/* CURRENT SCENARIO */}
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-bold flex items-center gap-2 border-b pb-4 mb-6 text-slate-800">
                 <Users className="w-5 h-5 text-slate-500" /> Current Operations (As-Is)
               </h2>
               <div className="space-y-6">
-                <ControlSlider label="Active Developers" value={devs} min={1} max={500} setter={setDevs} tooltip="Developers whose code gets reviewed." />
+                <ControlSlider label="Active Developers" value={devs} min={1} max={500} setter={setDevs} tooltip="Developers whose code gets reviewed. Include seniors here too if they also write code." />
                 <ControlSlider label="LOC per Dev / Day" value={locPerDev} min={100} max={15000} step={100} setter={setLocPerDev} tooltip="Lines of code each developer writes or changes per day." />
+                <ControlSlider label="Current AI Automation" value={automation} min={0} max={100} setter={setAutomation} suffix="%" tooltip="Share of review work the AI already handles today. Use 0 if you have no AI review yet." />
                 
                 <div className="pt-4 border-t border-slate-100 space-y-6">
-                  <ControlSlider label="Senior Engineers" value={seniors} min={1} max={100} setter={setSeniors} tooltip="Engineers who spend time reviewing other people's code." />
+                  <ControlSlider label="Senior Engineers" value={seniors} min={1} max={100} setter={setSeniors} tooltip="Engineers who review other people's code. Their review hours set your capacity." />
                   <ControlSlider 
                     label="Review Hrs / Senior / Day" value={dailyReviewHoursPerSenior} min={0.5} max={8} step={0.5} setter={setDailyReviewHoursPerSenior} suffix="h" tooltip="Hours per day each senior can give to reviews, not their whole workday." />
                   <ControlSlider label="Mins to audit 500 LOC" value={minsPer500} min={5} max={120} step={5} setter={setMinsPer500} suffix="m" tooltip="Time a senior needs to properly review 500 lines." />
                   <ControlSlider label="Senior Hourly Rate" value={hourlyRate} min={30} max={500} step={5} setter={setHourlyRate} prefix="$" tooltip="Full hourly cost of a senior engineer." />
+                  <ControlSlider label="Working Days / Year" value={workingDays} min={150} max={260} step={5} setter={setWorkingDays} tooltip="Productive days per year used to turn daily results into yearly ones." />
+                  <ControlSlider label="Current AI Tool Cost" value={currentToolCost} min={0} max={1000000} step={1000} setter={setCurrentToolCost} prefix="$" tooltip="What you already pay yearly for AI review tools. Assumed to continue in both scenarios." />
                 </div>
               </div>
             </div>
@@ -1038,7 +1091,22 @@ export default function App() {
                   highlightClass="text-amber-700 bg-amber-50 border-amber-200" accentClass="accent-amber-500" tooltip="Share of the AI's reviews that a person still has to redo or fix." />
 
                 <ControlSlider 
-                  label="AI Effectiveness vs. a Senior" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%" tooltip="How much a review by the AI is worth compared with one by a senior." />
+                  label="Confidence in Avoided Cost" value={avoidedCostConfidence} min={0} max={100} step={5} setter={setAvoidedCostConfidence} suffix="%" tooltip="How much of the avoided cost you'd defend in front of a CFO." />
+
+                <div>
+                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">How to value the backlog AI clears <HelpTip text="Review effort prices those hours at your hourly rate. Defects avoided prices the bugs that would otherwise slip through." /></div>
+                  <div className="flex gap-2 bg-slate-200 p-1 rounded-lg">
+                    {[['effort', 'Review effort'], ['defects', 'Defects avoided']].map(([k, l]) => (
+                      <button key={k} onClick={() => setAvoidedBasis(k)} className={`flex-1 text-xs font-bold py-2 rounded transition-all ${avoidedBasis === k ? 'bg-white text-slate-900 shadow-sm border border-slate-300' : 'text-slate-500 hover:text-slate-800'}`}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                {avoidedBasis === 'defects' && (
+                  <div className="space-y-6">
+                    <ControlSlider label="Escaped Defects / 1k LOC" value={defectsPer1kLoc} min={0} max={5} step={0.05} setter={setDefectsPer1kLoc} tooltip="Bugs that reach production per 1,000 lines that nobody reviews." />
+                    <ControlSlider label="Cost per Escaped Defect" value={costPerDefect} min={0} max={100000} step={500} setter={setCostPerDefect} prefix="$" tooltip="Average cost of one production bug: fixing it, downtime and customer impact." />
+                  </div>
+                )}
 
                 <ControlSlider 
                   label="Savings Realization Rate" value={savingsRealizationRate} min={0} max={100} step={5} setter={setSavingsRealizationRate} suffix="%" tooltip="How much of the freed time turns into real money saved." />
@@ -1049,6 +1117,9 @@ export default function App() {
                 <ControlSlider label="Adoption Ramp" value={rampMonths} min={0} max={24} step={1} setter={setRampMonths} suffix=" mo"
                   highlightClass="text-indigo-700 bg-white border-indigo-200 focus:ring-indigo-500" accentClass="accent-indigo-600"
                   tooltip="Months until the AI delivers its full effect." />
+                <ControlSlider label="Code Volume Growth / Year" value={volumeGrowth} min={0} max={50} step={1} setter={setVolumeGrowth} suffix="%" tooltip="How much more code your team expects to write each year. Review capacity stays fixed." />
+                <ControlSlider label="Hourly Rate Growth / Year" value={salaryGrowth} min={0} max={15} step={1} setter={setSalaryGrowth} suffix="%" tooltip="Expected yearly raise in the cost of a senior hour." />
+                <ControlSlider label="Discount Rate" value={discountRate} min={0} max={30} step={1} setter={setDiscountRate} suffix="%" tooltip="Used for present value. It reflects that money received later is worth less." />
 
                 {/* PRICING MODEL SELECTOR */}
                 <div className="pt-2 border-t border-slate-200">
@@ -1059,12 +1130,12 @@ export default function App() {
                   </div>
                   
                   {pricingModel === 'saas' ? (
-                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" tooltip="What the AI tool costs per year." />
+                    <ControlSlider label="Annual Software Cost" value={softwareCost} min={0} max={1000000} step={1000} setter={setSoftwareCost} prefix="$" tooltip="Yearly cost of the new tool, on top of what you pay today." />
                   ) : (
                     <div className="space-y-4">
                       <ControlSlider label="Inference Cost (per 1k LOC)" value={costPer1kLoc} min={0.01} max={5.00} step={0.01} setter={setCostPer1kLoc} prefix="$" tooltip="What the AI charges per 1,000 lines it reviews." />
                       <div className="bg-slate-100 p-3 rounded-lg border border-slate-200 flex justify-between items-center shadow-inner">
-                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1"><Rocket className="w-3 h-3" /> Annual API Cost</span>
+                        <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1"><Rocket className="w-3 h-3" /> Added API Cost (yearly)</span>
                         <span className="text-lg font-black text-slate-700">${tokenAnnualCost.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}</span>
                       </div>
                     </div>
@@ -1222,7 +1293,7 @@ export default function App() {
             <LockedSection locked={!isUnlocked} onUnlock={() => setShowModal(true)}>
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                 <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Target className="w-5 h-5 text-slate-700" /> Scenarios and sensitivity</h3>
-                <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">The pessimistic and optimistic cases shift only the assumptions about the AI and its costs. Facts about your team stay fixed.</p>
+                <p className="text-sm text-slate-500 mt-1 mb-4 max-w-3xl">These are illustrative cases, not forecasts. They keep your automation target and the facts about your team fixed, and change how well things go. Pessimistic: human follow-up +10 points, savings realization -25, confidence -25, costs +25%, ramp +3 months. Optimistic: -5, +20, +20, costs -15%, ramp -1 month.</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -1245,7 +1316,7 @@ export default function App() {
                 <div className="mt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h4 className="font-bold text-slate-900">What moves the result the most</h4>
-                    <p className="text-sm text-slate-500">Each bar shows how the 3-year result changes if that input is off by a typical margin. Check the longest bars first.</p>
+                    <p className="text-sm text-slate-500">Each bar shows how the 3-year result changes when that input moves by a fixed, illustrative margin (for example 25% on costs). The margins are not benchmarks. Check the longest bars first.</p>
                   </div>
                   <div className="flex gap-1 bg-slate-100 p-1 rounded-lg shrink-0">
                     {[['threeYearHardNet', 'Hard savings only'], ['threeYearStrategicNet', 'Incl. avoided cost']].map(([k, l]) => (
@@ -1295,6 +1366,7 @@ export default function App() {
                   <span className="flex items-center gap-2"><span className="w-3 h-1 rounded bg-[#3b82f6]" /> Hard savings only. Break-even: <strong>{ty.paybackHardMonth ? `month ${ty.paybackHardMonth}` : 'not within 36 months'}</strong></span>
                   <span className="flex items-center gap-2"><span className="w-3 h-1 rounded bg-[#f52e01]" /> Incl. avoided cost. Break-even: <strong>{ty.paybackStrategicMonth ? `month ${ty.paybackStrategicMonth}` : 'not within 36 months'}</strong></span>
                 </div>
+                <p className="mt-4 text-sm text-slate-600">Present value at {discountRate}% a year: hard savings only <strong>{signedMoney(ty.hardNpv)}</strong>, including avoided cost <strong>{signedMoney(ty.strategicNpv)}</strong>.</p>
                 <div className="mt-4 overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -1323,24 +1395,24 @@ export default function App() {
                 <span className="ml-auto text-xs font-semibold text-slate-500 group-open:hidden">Show</span>
                 <span className="ml-auto text-xs font-semibold text-slate-500 hidden group-open:inline">Hide</span>
               </summary>
-              <p className="mt-4 text-sm text-slate-600">We compared your inputs with public references where they exist. A value outside the typical range is not wrong, but be ready to explain it.</p>
+              <p className="mt-4 text-sm text-slate-600">We compared your inputs with public references where they exist. These are reference ranges from public sources, mostly US or global vendor data, not a standard. A value outside them is not wrong, but be ready to explain it.</p>
               <div className="mt-4 space-y-4">
                 {BENCHMARKS.map((b) => {
                   const v = b.value(inputs);
-                  const status = v === null ? null : (v < b.range[0] ? 'Below typical range' : (v > b.range[1] ? 'Above typical range' : 'Within typical range'));
+                  const status = v === null || b.noStatus ? null : (v < b.range[0] ? 'Below reference range' : (v > b.range[1] ? 'Above reference range' : 'Within reference range'));
                   return (
                     <div key={b.label} className="border-t border-slate-100 pt-4 text-sm">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <strong className="text-slate-900">{b.label}</strong>
                         {status && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${status.startsWith('Within') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{status}</span>}
                       </div>
-                      <div className="text-slate-600 mt-1">Your value: <strong>{v === null ? 'n/a for this pricing model' : `${Math.round(v * 100) / 100} ${b.unit}`}</strong>. Typical: {b.range[0]} to {b.range[1]} {b.unit}.</div>
+                      <div className="text-slate-600 mt-1">Your value: <strong>{v === null ? 'n/a for this pricing model' : `${Math.round(v * 100) / 100} ${b.unit}`}</strong>. Reference range: {b.range[0]} to {b.range[1]} {b.unit}.</div>
                       <div className="text-slate-500 mt-1">{b.note} Source: <a href={b.url} target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-800">{b.source}</a></div>
                     </div>
                   );
                 })}
                 <div className="border-t border-slate-100 pt-4 text-sm text-slate-500">
-                  <strong className="text-slate-900">Planning assumptions.</strong> We found no reliable public benchmark for lines of code per developer per day, review hours per senior, realization rate, setup cost or adoption ramp. Replace them with your own data. They are the inputs most likely to be questioned.
+                  <strong className="text-slate-900">Planning assumptions.</strong> We found no reliable public benchmark for lines of code per developer per day, review hours per senior, realization rate, confidence in avoided cost, setup cost, adoption ramp, defect rate and cost per defect, growth rates or the discount rate. Replace them with your own data. They are the inputs most likely to be questioned.
                 </div>
               </div>
             </details>
@@ -1412,11 +1484,12 @@ export default function App() {
                 <p><strong className="text-slate-800">Overload (backlog).</strong> Every team has a limit on how much code its senior engineers can review in a day. When the code coming in is more than that limit, the extra piles up as backlog: reviews that get delayed or skipped. That pile is the risk this tool puts a number on.</p>
                 <p><strong className="text-slate-800">What AI changes.</strong> AI takes over part of the reviewing. Some of its work still needs a person to step in, so we let you set how often that happens. The chart shows who ends up doing the work, with and without AI.</p>
                 <p><strong className="text-slate-800">Hard savings.</strong> Real money, and only when your seniors truly end up spending less time on reviews. If they are overloaded both before and after AI, they stay just as busy, so there is little cash to save. You also choose how much of any freed time you expect to turn into real savings.</p>
-                <p><strong className="text-slate-800">Avoided cost.</strong> The backlog AI clears is work you would otherwise have to pay people to do. It is a useful comparison but not cash, so we weigh it by how good the AI's reviews are compared with a senior's. You set that with AI effectiveness.</p>
-                <p><strong className="text-slate-800">Read these first.</strong> The 3-year net value, the payback, and the break-even AI effectiveness. The last one is the most telling: it is how good the AI's reviews must be, compared with a senior's, for the investment to pay back. A low number means the case does not rely on a generous assumption.</p>
+                <p><strong className="text-slate-800">Avoided cost.</strong> The backlog AI clears is work you would otherwise have to pay people to do. It is a useful comparison, but it is not cash, so you decide how much of it you are confident to count.</p>
+                <p><strong className="text-slate-800">Read these first.</strong> The 3-year net value, the payback, and the break-even confidence. The last one is the most telling: it is the share of the avoided cost that has to be real for the investment to pay back. A low number means the case does not rely on a generous assumption.</p>
                 <p><strong className="text-slate-800">The ROI percentages come second.</strong> The conservative one counts only real savings and is the one a finance team will trust. The strategic one also counts avoided cost and can look very large when the software is cheap, which is why large values are shown as multiples.</p>
                 <p><strong className="text-slate-800">Scenarios and sensitivity.</strong> The pessimistic and optimistic cases change only the assumptions about the AI and its costs. The sensitivity chart shows which inputs move the three-year result the most, so you know where to look for better data first.</p>
                 <p><strong className="text-slate-800">Three-year view.</strong> Adds a one-time setup cost and a gradual ramp, because AI rarely delivers its full effect on day one. The steady-state ROI above assumes full effect from the start.</p>
+                <p><strong className="text-slate-800">Valuing the backlog.</strong> You can price the backlog AI clears in two ways: by the review effort it would take, or by the bugs that would otherwise slip into production. Only one is used at a time, so nothing is counted twice. Growth and the discount rate then show how the three years look as your code and salaries grow, and what the money is worth in today's terms.</p>
                 <p><strong className="text-slate-800">Why a higher hourly rate can improve the result.</strong> The software costs the same whatever your seniors earn, but every hour AI frees or every backlog hour it clears is worth more. The As-Is panel shows how much more your current setup costs when salaries rise.</p>
                 <p><strong className="text-slate-800">A common situation.</strong> A busy team with a large backlog adopts AI. The backlog shrinks a lot, but the seniors stay just as busy. The conservative ROI looks weak and the strategic ROI looks strong. Neither is wrong: the value is in risk and speed, not in cutting payroll.</p>
                 <p className="text-xs text-slate-500">These are estimates to support a decision, based on the numbers you enter. They are not guarantees.</p>
